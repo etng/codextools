@@ -218,6 +218,10 @@ func (s *server) dispatch(ctx context.Context, command string, args map[string]a
 		return s.pluginMarketplaceStatus()
 	case "repair_plugin_marketplace":
 		return s.repairPluginMarketplace(ctx)
+	case "remote_plugin_marketplace_status":
+		return s.remotePluginMarketplaceStatus()
+	case "repair_remote_plugin_marketplace":
+		return s.repairRemotePluginMarketplace()
 	case "repair_codex_goals":
 		return s.repairCodexGoals()
 	case "load_computer_use_status":

@@ -385,7 +385,7 @@ func zedRemoteProjectsResponse(payload map[string]any) map[string]any {
 	if !settings.ZedRemoteProjectRegistryEnabled {
 		return map[string]any{"status": "ok", "projects": []zedRemoteProject{}, "message": "Zed 项目记录已关闭"}
 	}
-	projects, err := listZedRemoteProjects(payload, zedRegistryPath(), filepath.Join(codexHomeDir(), "state_5.sqlite"))
+	projects, err := listZedRemoteProjects(payload, zedRegistryPath(), "")
 	if err != nil {
 		return map[string]any{"status": "failed", "message": err.Error()}
 	}
@@ -519,7 +519,12 @@ func workspaceRootFromSQLite(threadID, statePath string) string {
 		return ""
 	}
 	if statePath == "" {
-		statePath = filepath.Join(codexHomeDir(), "state_5.sqlite")
+		for _, path := range codexSessionDBPaths(codexHomeDir()) {
+			if root := workspaceRootFromSQLite(threadID, path); root != "" {
+				return root
+			}
+		}
+		return ""
 	}
 	if !fileExists(statePath) {
 		return ""
@@ -653,7 +658,13 @@ func listZedRemoteProjects(payload map[string]any, registryPath, sqlitePath stri
 		collectCurrentZedProject(state, payload, &projects)
 		collectCodexRemoteProjects(state, &projects)
 		collectThreadWorkspaceHintProjects(state, &projects)
-		collectSQLiteThreadCWDProjects(state, sqlitePath, &projects)
+		if sqlitePath != "" {
+			collectSQLiteThreadCWDProjects(state, sqlitePath, &projects)
+		} else {
+			for _, path := range codexSessionDBPaths(codexHomeDir()) {
+				collectSQLiteThreadCWDProjects(state, path, &projects)
+			}
+		}
 	} else if !os.IsNotExist(stateErr) {
 		return nil, stateErr
 	}

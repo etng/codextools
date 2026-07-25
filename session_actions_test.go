@@ -194,6 +194,72 @@ func TestDeleteThreadAndUndoRestoresRolloutAndSQLite(t *testing.T) {
 	}
 }
 
+func TestSessionActionsHonorCodexSQLiteHomeAndDatabaseProvenance(t *testing.T) {
+	home := t.TempDir()
+	sqliteHome := filepath.Join(t.TempDir(), "sqlite-home")
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_SQLITE_HOME", sqliteHome)
+	sessionID := "019a61dd-9748-7743-9ce9-92b8663a935b"
+	rolloutPath := filepath.Join(home, ".codex", "sessions", "2026", "07", "rollout-"+sessionID+".jsonl")
+	dbPath := filepath.Join(sqliteHome, "sqlite", "codex-dev.db")
+	writeTestFile(t, rolloutPath, testSessionRolloutLine(sessionID, "/old", "SQLite override")+"\n")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("create sqlite home: %v", err)
+	}
+	createTestThreadsTable(t, dbPath, sessionID, rolloutPath, "/old", "SQLite override")
+
+	moved := handleSessionDataRoute("/move-thread-workspace", map[string]any{"session_id": sessionID, "target_cwd": "/new"})
+	if moved["status"] != "moved" {
+		t.Fatalf("move through CODEX_SQLITE_HOME failed: %#v", moved)
+	}
+	if got := testThreadCWD(t, dbPath, sessionID); got != "/new" {
+		t.Fatalf("override database cwd = %q", got)
+	}
+
+	deleted := handleSessionDataRoute("/delete", map[string]any{"session_id": sessionID})
+	if deleted["status"] != "local_deleted" || testThreadCount(t, dbPath, sessionID) != 0 {
+		t.Fatalf("delete through CODEX_SQLITE_HOME failed: %#v", deleted)
+	}
+	restored := handleSessionDataRoute("/undo", map[string]any{"undo_token": deleted["undo_token"]})
+	if restored["status"] != "ok" || testThreadCount(t, dbPath, sessionID) != 1 {
+		t.Fatalf("undo should restore the originating database: %#v", restored)
+	}
+}
+
+func TestUndoRejectsManifestFileOutsideRecordedRollout(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "019a61dd-9748-7743-9ce9-92b8663a935b"
+	dbPath := filepath.Join(home, ".codex", "state_5.sqlite")
+	rolloutPath := filepath.Join(home, ".codex", "sessions", "rollout-"+sessionID+".jsonl")
+	outsidePath := filepath.Join(home, "outside.txt")
+	writeTestFile(t, rolloutPath, testSessionRolloutLine(sessionID, "/project", "Delete me")+"\n")
+	createTestThreadsTable(t, dbPath, sessionID, rolloutPath, "/project", "Delete me")
+
+	deleted := handleSessionDataRoute("/delete", map[string]any{"session_id": sessionID})
+	token := stringFromAny(deleted["undo_token"])
+	backupDir, err := sessionDeleteBackupDir(token)
+	if err != nil {
+		t.Fatalf("backup dir: %v", err)
+	}
+	var manifest deletedSessionManifest
+	if err := readJSON(filepath.Join(backupDir, "manifest.json"), &manifest); err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	manifest.Files[0].OriginalPath = outsidePath
+	if err := atomicWriteJSON(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
+		t.Fatalf("tamper manifest: %v", err)
+	}
+
+	restored := handleSessionDataRoute("/undo", map[string]any{"undo_token": token})
+	if restored["status"] != "failed" || !strings.Contains(stringFromAny(restored["message"]), "未授权") {
+		t.Fatalf("tampered restore should fail: %#v", restored)
+	}
+	if fileExists(outsidePath) {
+		t.Fatal("tampered restore wrote outside the recorded rollout path")
+	}
+}
+
 func testSessionRolloutLine(sessionID, cwd, title string) string {
 	data, _ := json.Marshal(map[string]any{
 		"type": "session_meta",

@@ -163,6 +163,14 @@ func runLauncher(args []string) error {
 			"message":          repairResult.Message,
 		})
 	}
+	if settings.CodexAppPluginMarketplaceUnlock {
+		configured, marketplaceErr := ensureOpenAICuratedMarketplaceConfig(codexHomeDir())
+		if marketplaceErr != nil {
+			appendDiagnosticLog("launcher.plugin_marketplace_config_failed_nonfatal", map[string]any{"home": codexHomeDir(), "error": marketplaceErr.Error()})
+		} else if configured {
+			appendDiagnosticLog("launcher.plugin_marketplace_configured", map[string]any{"home": codexHomeDir()})
+		}
+	}
 	if helperNeeded(settings) {
 		if err := runtimeState.startHelper(helperPort); err != nil {
 			failure := launchStatus{

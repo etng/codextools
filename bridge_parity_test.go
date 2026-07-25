@@ -185,17 +185,20 @@ func TestBridgeSettingsIncludesRuntimeCodexAppVersion(t *testing.T) {
 	}
 }
 
-func TestInjectionScriptDoesNotInjectLocalPluginMarketplaces(t *testing.T) {
+func TestInjectionScriptInjectsLocalPluginMarketplacesWithoutAds(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	manifest := filepath.Join(home, ".codex", ".tmp", "plugins", ".agents", "plugins", "marketplace.json")
 	writeTestFile(t, manifest, `{"name":"openai-curated","plugins":[{"name":"writer"}]}`)
 	script := injectionScript(57321, defaultSettings())
 
-	for _, forbidden := range []string{"window.__CODEX_PLUS_PLUGIN_MARKETPLACES__", `"openai-curated"`, `"writer"`} {
-		if strings.Contains(script, forbidden) {
-			t.Fatalf("injection should rely on Codex's native marketplace instead of injecting local payload %q", forbidden)
+	for _, expected := range []string{"window.__CODEX_PLUS_PLUGIN_MARKETPLACES__", `"writer"`, `"openai-curated"`} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("injection should include normalized local marketplace payload %q", expected)
 		}
+	}
+	if strings.Contains(script, "/ads") {
+		t.Fatal("local marketplace payload must not reintroduce ads")
 	}
 }
 
@@ -228,6 +231,7 @@ func TestImageOverlayConfigAndInjectionScript(t *testing.T) {
 	settings.CodexAppImageOverlayEnabled = true
 	settings.CodexAppImageOverlayPath = imagePath
 	settings.CodexAppImageOverlayOpacity = 42
+	settings.CodexAppImageOverlayFitMode = "tile"
 
 	config := imageOverlayConfig(57321, settings)
 
@@ -240,11 +244,35 @@ func TestImageOverlayConfigAndInjectionScript(t *testing.T) {
 	if got := stringFromAny(config["imageUrl"]); got != "http://127.0.0.1:57321/overlay/image" {
 		t.Fatalf("overlay image URL mismatch: %q", got)
 	}
+	if got := stringFromAny(config["fitMode"]); got != "tile" {
+		t.Fatalf("overlay fit mode mismatch: %q", got)
+	}
 	script := injectionScript(57321, settings)
 	for _, expected := range []string{"__CODEX_PLUS_IMAGE_OVERLAY__", "codex-plus-image-overlay", "image_overlay_installed"} {
 		if !strings.Contains(script, expected) {
 			t.Fatalf("injection script missing overlay marker %q", expected)
 		}
+	}
+}
+
+func TestBridgeSettingsPersistLatestEnhancementFields(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runtime := &launcherRuntime{}
+	result := runtime.handleBridgeRequest("/settings/set", json.RawMessage(`{
+  "codexAppPluginMarketplaceUnlock": false,
+  "codexAppPluginAutoExpand": false,
+  "codexAppFastStartup": true,
+  "codexAppImageOverlayFitMode": "stretch"
+}`))
+	if stringFromAny(result["status"]) != "ok" {
+		t.Fatalf("settings set failed: %#v", result)
+	}
+	loaded := loadSettings()
+	if loaded.CodexAppPluginMarketplaceUnlock || loaded.CodexAppPluginAutoExpand {
+		t.Fatalf("explicitly disabled plugin settings were not preserved: %#v", loaded)
+	}
+	if !loaded.CodexAppFastStartup || loaded.CodexAppImageOverlayFitMode != "stretch" {
+		t.Fatalf("latest enhancement fields were not persisted: %#v", loaded)
 	}
 }
 

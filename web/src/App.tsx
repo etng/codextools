@@ -252,8 +252,8 @@ type BackendSettings = {
   relayProfilesEnabled: boolean;
   ccsLinkEnabled: boolean;
   enhancementsEnabled: boolean;
-  codexAppPluginEntryUnlock: boolean;
-  codexAppForcePluginInstall: boolean;
+  codexAppPluginMarketplaceUnlock: boolean;
+  codexAppPluginAutoExpand: boolean;
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
@@ -277,6 +277,7 @@ type BackendSettings = {
   codexAppImageOverlayEnabled: boolean;
   codexAppImageOverlayPath: string;
   codexAppImageOverlayOpacity: number;
+  codexAppImageOverlayFitMode: "fit" | "fill" | "stretch" | "tile" | "center";
   codexGoalsEnabled: boolean;
   mobileControlEnabled: boolean;
   mobileControlRelayUrl: string;
@@ -822,14 +823,14 @@ const defaultSettings: BackendSettings = {
   relayProfilesEnabled: true,
   ccsLinkEnabled: false,
   enhancementsEnabled: true,
-  codexAppPluginEntryUnlock: false,
-  codexAppForcePluginInstall: true,
+  codexAppPluginMarketplaceUnlock: true,
+  codexAppPluginAutoExpand: true,
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: true,
-  codexAppFastStartup: true,
+  codexAppFastStartup: false,
   codexAppProjectMove: true,
   codexAppConversationTimeline: false,
   codexAppThreadIdBadge: false,
@@ -847,6 +848,7 @@ const defaultSettings: BackendSettings = {
   codexAppImageOverlayEnabled: false,
   codexAppImageOverlayPath: "",
   codexAppImageOverlayOpacity: 35,
+  codexAppImageOverlayFitMode: "fit",
   codexGoalsEnabled: false,
   mobileControlEnabled: false,
   mobileControlRelayUrl: "",
@@ -1191,7 +1193,7 @@ export function App() {
       showNotice("图片覆盖层", "未选择图片。", "not_checked");
       return;
     }
-    const next = {
+    const next: BackendSettings = {
       ...settingsForm,
       codexAppImageOverlayEnabled: true,
       codexAppImageOverlayPath: selected.trim(),
@@ -1202,11 +1204,12 @@ export function App() {
   };
 
   const resetImageOverlaySettings = async () => {
-    const next = {
+    const next: BackendSettings = {
       ...settingsForm,
       codexAppImageOverlayEnabled: false,
       codexAppImageOverlayPath: "",
       codexAppImageOverlayOpacity: 35,
+      codexAppImageOverlayFitMode: "fit",
     };
     setSettingsForm(next);
     const result = await saveSettingsValue(next, true);
@@ -1810,6 +1813,14 @@ export function App() {
     }
   };
 
+  const repairRemotePluginMarketplace = async () => {
+    const result = await run(() => call<CommandResult<Record<string, unknown>>>("repair_remote_plugin_marketplace"));
+    if (result) {
+      showNotice("官方远端插件缓存", result.message, result.status);
+      await refreshRelayFiles(true);
+    }
+  };
+
   const repairCodexGoals = async () => {
     const result = await run(() => call<CodexConfigRepairResult>("repair_codex_goals"));
     if (result) {
@@ -2265,6 +2276,7 @@ export function App() {
       repairBackend,
       repairCodexApp,
       repairPluginMarketplace,
+      repairRemotePluginMarketplace,
       installEntrypoints,
       uninstallEntrypoints,
       uninstallCodexTools,
@@ -2609,6 +2621,7 @@ type Actions = {
   restart: () => Promise<void>;
   repairBackend: () => Promise<void>;
   repairPluginMarketplace: () => Promise<void>;
+  repairRemotePluginMarketplace: () => Promise<void>;
   installEntrypoints: () => Promise<void>;
   uninstallEntrypoints: () => Promise<void>;
   uninstallCodexTools: () => Promise<void>;
@@ -4045,16 +4058,17 @@ function EnhanceScreen({
           {form.launchMode === "relay" ? (
             <div className="hint-line">
               <ShieldCheck className="h-4 w-4" />
-              <span>{mixedRelayMode ? "当前为混合 API 增强：保留官方登录能力，原生站点/插件市场和强制安装可继续使用。" : "当前为兼容增强模式：纯中转/聚合会关闭强制入口解锁和强制安装，其它页面功能仍可用。"}</span>
+              <span>{mixedRelayMode ? "当前为混合 API 增强：保留官方登录能力，插件市场解锁与自动展开可继续使用。" : "当前为兼容增强模式：纯中转/聚合会关闭插件市场 patch，其它页面功能仍可用。"}</span>
             </div>
           ) : null}
           <div className="feature-switch-grid">
-            <FeatureToggle title="特殊插件/站点强制安装" detail="解除 App unavailable / 应用不可用导致的前端安装禁用。" checked={form.codexAppForcePluginInstall} disabled={!masterEnabled || !pluginPatchAllowed} onChange={(value) => setEnhanceFlag("codexAppForcePluginInstall", value)} />
+            <FeatureToggle title="插件市场解锁" detail="扩展 marketplace 请求并显示被客户端版本过滤的官方插件。" checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !pluginPatchAllowed} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
+            <FeatureToggle title="插件列表自动展开" detail="进入插件页后自动展开“显示更多”，展示完整插件列表。" checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !pluginPatchAllowed} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
             <FeatureToggle title="模型白名单解锁" detail="读取本地和上游模型目录，补进 Codex 模型选择列表。" checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
             <FeatureToggle title="Fast 按钮" detail="显示服务模式切换入口，控制 Standard / Fast / priority。" checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
             <FeatureToggle title="粘贴修复" detail="修复部分输入框粘贴事件被 Codex 前端吞掉的问题。" checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
             <FeatureToggle title="强制中文界面" detail="启动时传入 zh-CN locale，并在注入层补齐部分菜单本地化。" checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
-            <FeatureToggle title="快速启动参数" detail="启动 ChatGPT 时附加上游 fast startup 参数，减少启动卡顿。" checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
+            <FeatureToggle title="快速启动参数" detail="限制 Statsig 初始化等待时间；默认关闭，遇到启动卡顿时再开启。" checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
             <FeatureToggle title="会话删除" detail="在会话列表悬停显示删除按钮，并支持撤销。" checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
             <FeatureToggle title="Markdown 导出" detail="导出带时间戳的 Markdown。" checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
             <FeatureToggle title="会话项目移动" detail="把会话移动到普通对话或其他本地项目。" checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
@@ -4086,6 +4100,10 @@ function EnhanceScreen({
             <Button onClick={() => void actions.repairPluginMarketplace()} variant="secondary">
               <Sparkles className="h-4 w-4" />
               修复插件市场
+            </Button>
+            <Button onClick={() => void actions.repairRemotePluginMarketplace()} variant="outline">
+              <Download className="h-4 w-4" />
+              释放官方远端插件缓存
             </Button>
           </Toolbar>
         </CardContent>
@@ -4808,6 +4826,22 @@ function SettingsScreen({
               type="range"
               value={form.codexAppImageOverlayOpacity || 35}
             />
+          </Field>
+          <Field label="图片适配方式">
+            <select
+              className="field-select"
+              value={form.codexAppImageOverlayFitMode}
+              onChange={(event) => onFormChange({
+                ...form,
+                codexAppImageOverlayFitMode: event.currentTarget.value as BackendSettings["codexAppImageOverlayFitMode"],
+              })}
+            >
+              <option value="fit">完整显示</option>
+              <option value="fill">填满窗口</option>
+              <option value="stretch">拉伸</option>
+              <option value="tile">平铺</option>
+              <option value="center">原尺寸居中</option>
+            </select>
           </Field>
           <Toolbar>
             <Button onClick={() => void actions.chooseImageOverlayPath()} variant="secondary">

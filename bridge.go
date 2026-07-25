@@ -33,7 +33,7 @@ func (r *launcherRuntime) handleBridgeRequest(path string, payload json.RawMessa
 		r.logRendererDiagnostic(payload)
 		result = map[string]any{"status": "ok", "message": "日志已记录"}
 	case "/user-scripts/list":
-		result = userScriptInventoryValue()
+		result = userScriptInventoryValue(payloadMap["runtime_status"])
 	case "/user-scripts/set-enabled":
 		config := loadUserScriptConfig()
 		config.Enabled = boolFromAny(payloadMap["enabled"])
@@ -143,8 +143,8 @@ func (r *launcherRuntime) bridgeSettingsValue(settings backendSettings) map[stri
 		"relayProfilesEnabled":            settings.RelayProfilesEnabled,
 		"ccsLinkEnabled":                  settings.CCSLinkEnabled,
 		"enhancementsEnabled":             settings.Enhancements,
-		"codexAppPluginEntryUnlock":       settings.CodexAppPluginEntryUnlock,
-		"codexAppForcePluginInstall":      settings.CodexAppForcePluginInstall,
+		"codexAppPluginMarketplaceUnlock": settings.CodexAppPluginMarketplaceUnlock,
+		"codexAppPluginAutoExpand":        settings.CodexAppPluginAutoExpand,
 		"codexAppModelWhitelistUnlock":    settings.CodexAppModelWhitelistUnlock,
 		"codexAppSessionDelete":           settings.CodexAppSessionDelete,
 		"codexAppMarkdownExport":          settings.CodexAppMarkdownExport,
@@ -168,6 +168,7 @@ func (r *launcherRuntime) bridgeSettingsValue(settings backendSettings) map[stri
 		"codexAppImageOverlayEnabled":     settings.CodexAppImageOverlayEnabled,
 		"codexAppImageOverlayPath":        settings.CodexAppImageOverlayPath,
 		"codexAppImageOverlayOpacity":     settings.CodexAppImageOverlayOpacity,
+		"codexAppImageOverlayFitMode":     settings.CodexAppImageOverlayFitMode,
 		"codexGoalsEnabled":               settings.CodexGoalsEnabled,
 		"mobileControlEnabled":            settings.MobileControlEnabled,
 		"mobileControlRelayUrl":           settings.MobileControlRelayURL,
@@ -206,8 +207,8 @@ func (r *launcherRuntime) setBridgeSettings(payload map[string]any) map[string]a
 	applyBool("relayProfilesEnabled", &settings.RelayProfilesEnabled)
 	applyBool("ccsLinkEnabled", &settings.CCSLinkEnabled)
 	applyBool("enhancementsEnabled", &settings.Enhancements)
-	applyBool("codexAppPluginEntryUnlock", &settings.CodexAppPluginEntryUnlock)
-	applyBool("codexAppForcePluginInstall", &settings.CodexAppForcePluginInstall)
+	applyBool("codexAppPluginMarketplaceUnlock", &settings.CodexAppPluginMarketplaceUnlock)
+	applyBool("codexAppPluginAutoExpand", &settings.CodexAppPluginAutoExpand)
 	applyBool("codexAppModelWhitelistUnlock", &settings.CodexAppModelWhitelistUnlock)
 	applyBool("codexAppSessionDelete", &settings.CodexAppSessionDelete)
 	applyBool("codexAppMarkdownExport", &settings.CodexAppMarkdownExport)
@@ -238,6 +239,9 @@ func (r *launcherRuntime) setBridgeSettings(payload map[string]any) map[string]a
 	}
 	if _, ok := payload["codexAppImageOverlayOpacity"]; ok {
 		settings.CodexAppImageOverlayOpacity = intArg(payload, "codexAppImageOverlayOpacity", settings.CodexAppImageOverlayOpacity)
+	}
+	if _, ok := payload["codexAppImageOverlayFitMode"]; ok {
+		settings.CodexAppImageOverlayFitMode = normalizeImageOverlayFitMode(stringFromAny(payload["codexAppImageOverlayFitMode"]))
 	}
 	if _, ok := payload["mobileControlRelayUrl"]; ok {
 		settings.MobileControlRelayURL = strings.TrimSpace(stringFromAny(payload["mobileControlRelayUrl"]))
@@ -287,7 +291,24 @@ func enabledUserScriptBundle() string {
 		if err != nil {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("\n;(() => {\n%s\n})();\n", string(data)))
+		keyJSON, _ := json.Marshal(item.Key)
+		nameJSON, _ := json.Marshal(item.Name)
+		sourceJSON, _ := json.Marshal(item.Source)
+		parts = append(parts, fmt.Sprintf(`
+;(() => {
+  window.__codexPlusUserScripts = window.__codexPlusUserScripts || { scripts: {} };
+  const key = %s;
+  window.__codexPlusUserScripts.scripts[key] = { key, name: %s, source: %s, status: "loading", error: "", loadedAt: new Date().toISOString() };
+  try {
+%s
+    window.__codexPlusUserScripts.scripts[key].status = "loaded";
+    window.__codexPlusUserScripts.scripts[key].loadedAt = new Date().toISOString();
+  } catch (error) {
+    window.__codexPlusUserScripts.scripts[key].status = "failed";
+    window.__codexPlusUserScripts.scripts[key].error = String(error && (error.stack || error.message) || error);
+  }
+})();
+`, keyJSON, nameJSON, sourceJSON, string(data)))
 	}
 	return strings.Join(parts, "\n")
 }
@@ -561,10 +582,11 @@ func injectionScript(helperPort uint16, settings backendSettings) string {
 	versionJSON, _ := json.Marshal(version)
 	buildJSON, _ := json.Marshal("go-20260711-1")
 	imageOverlayJSON, _ := json.Marshal(imageOverlayConfig(helperPort, settings))
+	pluginMarketplacesJSON, _ := json.Marshal(localPluginMarketplaces(codexHomeDir()))
 	fastStartupJSON, _ := json.Marshal(map[string]any{"enabled": settings.CodexAppFastStartup, "statsigTimeoutMs": 800})
 	chineseLocaleJSON, _ := json.Marshal(map[string]any{"enabled": settings.CodexAppForceChineseLocale, "locale": "zh-CN"})
 	nativeMenuLocalizationJSON, _ := json.Marshal(map[string]any{"enabled": settings.CodexAppNativeMenuLocalization, "locale": "zh-CN"})
-	return fmt.Sprintf("window.__CODEX_SESSION_DELETE_HELPER__ = %s;\nwindow.__CODEX_PLUS_VERSION__ = %s;\nwindow.__CODEX_PLUS_BUILD__ = %s;\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = %s;\nwindow.__CODEX_PLUS_FAST_STARTUP__ = %s;\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = %s;\nwindow.__CODEX_PLUS_NATIVE_MENU_LOCALIZATION__ = %s;\n%s", helperJSON, versionJSON, buildJSON, imageOverlayJSON, fastStartupJSON, chineseLocaleJSON, nativeMenuLocalizationJSON, rendererInjectScript)
+	return fmt.Sprintf("window.__CODEX_SESSION_DELETE_HELPER__ = %s;\nwindow.__CODEX_PLUS_VERSION__ = %s;\nwindow.__CODEX_PLUS_BUILD__ = %s;\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = %s;\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = %s;\nwindow.__CODEX_PLUS_FAST_STARTUP__ = %s;\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = %s;\nwindow.__CODEX_PLUS_NATIVE_MENU_LOCALIZATION__ = %s;\n%s", helperJSON, versionJSON, buildJSON, imageOverlayJSON, pluginMarketplacesJSON, fastStartupJSON, chineseLocaleJSON, nativeMenuLocalizationJSON, rendererInjectScript)
 }
 
 func imageOverlayConfig(helperPort uint16, settings backendSettings) map[string]any {
@@ -597,6 +619,7 @@ func imageOverlayConfig(helperPort uint16, settings backendSettings) map[string]
 	return map[string]any{
 		"enabled":  enabled,
 		"opacity":  float64(opacity) / 100.0,
+		"fitMode":  normalizeImageOverlayFitMode(settings.CodexAppImageOverlayFitMode),
 		"dataUrl":  dataURL,
 		"imageUrl": imageURL,
 	}

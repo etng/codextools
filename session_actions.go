@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const sessionDeleteBackupVersion = 1
+const sessionDeleteBackupVersion = 2
 
 type sessionRolloutFile struct {
 	Path        string
@@ -30,6 +30,8 @@ type sessionRolloutFile struct {
 type sessionSQLiteRow struct {
 	Columns []string       `json:"columns"`
 	Values  map[string]any `json:"values"`
+	DBPath  string         `json:"db_path,omitempty"`
+	Table   string         `json:"table,omitempty"`
 }
 
 type sessionLookupResult struct {
@@ -120,13 +122,12 @@ func deleteSessionDataRoute(payload map[string]any) map[string]any {
 	if err != nil {
 		return map[string]any{"status": "failed", "session_id": sessionID, "message": "删除失败：创建备份失败：" + err.Error()}
 	}
-	dbPath := filepath.Join(home, "state_5.sqlite")
-	if err := deleteSQLiteThreadRows(dbPath, lookup.allIDs()); err != nil {
+	if err := deleteSessionLookupRows(lookup); err != nil {
 		return map[string]any{"status": "failed", "session_id": sessionID, "message": "删除失败：更新会话索引失败：" + err.Error()}
 	}
 	for _, file := range lookup.Files {
 		if err := os.Remove(file.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			_ = restoreSQLiteThreadRows(dbPath, lookup.DBRows)
+			_ = restoreSessionSQLiteRows(lookup.DBRows)
 			return map[string]any{"status": "failed", "session_id": sessionID, "message": "删除失败：移除会话文件失败：" + err.Error(), "undo_token": undoToken}
 		}
 	}
@@ -151,13 +152,16 @@ func undoSessionDataRoute(payload map[string]any) map[string]any {
 	if err := readJSON(filepath.Join(backupDir, "manifest.json"), &manifest); err != nil {
 		return map[string]any{"status": "failed", "message": "撤销失败：备份不存在或已损坏"}
 	}
+	if err := validateDeletedSessionRestorePaths(manifest); err != nil {
+		return map[string]any{"status": "failed", "session_id": manifest.SessionID, "message": "撤销失败：" + err.Error()}
+	}
 	for _, file := range manifest.Files {
 		source := filepath.Join(backupDir, file.BackupName)
 		if err := copyFileIfExists(source, file.OriginalPath); err != nil {
 			return map[string]any{"status": "failed", "session_id": manifest.SessionID, "message": "撤销失败：恢复会话文件失败：" + err.Error()}
 		}
 	}
-	if err := restoreSQLiteThreadRows(filepath.Join(codexHomeDir(), "state_5.sqlite"), manifest.Rows); err != nil {
+	if err := restoreSessionSQLiteRows(manifest.Rows); err != nil {
 		return map[string]any{"status": "failed", "session_id": manifest.SessionID, "message": "撤销失败：恢复会话索引失败：" + err.Error()}
 	}
 	return map[string]any{"status": "ok", "session_id": manifest.SessionID, "message": "已恢复会话。"}
@@ -198,7 +202,7 @@ func moveThreadWorkspaceDataRoute(payload map[string]any) map[string]any {
 			return map[string]any{"status": "failed", "session_id": sessionID, "message": "移动失败：更新会话文件失败：" + err.Error()}
 		}
 	}
-	if err := updateSQLiteThreadWorkspace(filepath.Join(home, "state_5.sqlite"), lookup.allIDs(), targetCWD); err != nil {
+	if err := updateSessionLookupWorkspace(lookup, targetCWD); err != nil {
 		return map[string]any{"status": "failed", "session_id": sessionID, "message": "移动失败：更新会话索引失败：" + err.Error()}
 	}
 	if err := updateCodexGlobalStateForWorkspaceMove(home, lookup, targetCWD); err != nil {
@@ -286,22 +290,25 @@ func lookupSession(home, sessionID, title string, archivedOnly bool) (sessionLoo
 	var lookup sessionLookupResult
 	lookup.RequestedID = strings.TrimSpace(sessionID)
 	lookup.Variants = sessionIDVariants(sessionID)
-	dbPath := filepath.Join(home, "state_5.sqlite")
 	var rows []sessionSQLiteRow
 	var err error
-	if len(lookup.Variants) > 0 {
-		rows, err = sqliteThreadRowsByIDs(dbPath, lookup.Variants)
-		if err == nil && len(rows) == 0 {
-			rows, err = sqliteAutomationRunRowsByIDs(dbPath, lookup.Variants)
+	for _, dbPath := range codexSessionDBPaths(home) {
+		var candidate []sessionSQLiteRow
+		if len(lookup.Variants) > 0 {
+			candidate, err = sqliteThreadRowsByIDs(dbPath, lookup.Variants)
+			if err == nil && len(candidate) == 0 {
+				candidate, err = sqliteAutomationRunRowsByIDs(dbPath, lookup.Variants)
+			}
+		} else if strings.TrimSpace(title) != "" {
+			candidate, err = sqliteThreadRowsByTitle(dbPath, title, archivedOnly)
+			if err == nil && len(candidate) == 0 {
+				candidate, err = sqliteAutomationRunRowsByTitle(dbPath, title, archivedOnly)
+			}
 		}
-	} else if strings.TrimSpace(title) != "" {
-		rows, err = sqliteThreadRowsByTitle(dbPath, title, archivedOnly)
-		if err == nil && len(rows) == 0 {
-			rows, err = sqliteAutomationRunRowsByTitle(dbPath, title, archivedOnly)
+		if err != nil {
+			return lookup, err
 		}
-	}
-	if err != nil {
-		return lookup, err
+		rows = append(rows, candidate...)
 	}
 	lookup.DBRows = rows
 	for _, row := range rows {
@@ -383,6 +390,137 @@ func (l sessionLookupResult) allIDs() []string {
 		ids = appendSessionIDVariants(ids, file.SessionID)
 	}
 	return uniqueNonEmptyStrings(ids)
+}
+
+func annotateSessionRows(rows []sessionSQLiteRow, dbPath, table string) []sessionSQLiteRow {
+	for index := range rows {
+		rows[index].DBPath = filepath.Clean(dbPath)
+		rows[index].Table = table
+	}
+	return rows
+}
+
+func rowsByDatabase(rows []sessionSQLiteRow) map[string][]sessionSQLiteRow {
+	grouped := map[string][]sessionSQLiteRow{}
+	for _, row := range rows {
+		path := strings.TrimSpace(row.DBPath)
+		if path == "" {
+			path = codexPreferredSessionDBPath(codexHomeDir())
+		}
+		grouped[filepath.Clean(path)] = append(grouped[filepath.Clean(path)], row)
+	}
+	return grouped
+}
+
+func deleteSessionLookupRows(lookup sessionLookupResult) error {
+	ids := lookup.allIDs()
+	tablesByPath := map[string]map[string]bool{}
+	for _, row := range lookup.DBRows {
+		if (row.Table == "threads" || row.Table == "automation_runs") && strings.TrimSpace(row.DBPath) != "" {
+			path := filepath.Clean(row.DBPath)
+			if tablesByPath[path] == nil {
+				tablesByPath[path] = map[string]bool{}
+			}
+			tablesByPath[path][row.Table] = true
+		}
+	}
+	if len(tablesByPath) == 0 {
+		for _, path := range codexSessionDBPaths(codexHomeDir()) {
+			tablesByPath[path] = map[string]bool{"threads": true}
+		}
+	}
+	for path, tables := range tablesByPath {
+		for table := range tables {
+			if err := deleteSQLiteSessionRows(path, table, ids); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func updateSessionLookupWorkspace(lookup sessionLookupResult, targetCWD string) error {
+	ids := lookup.allIDs()
+	paths := map[string]bool{}
+	for _, row := range lookup.DBRows {
+		if row.Table == "threads" && strings.TrimSpace(row.DBPath) != "" {
+			paths[filepath.Clean(row.DBPath)] = true
+		}
+	}
+	if len(paths) == 0 {
+		for _, path := range codexSessionDBPaths(codexHomeDir()) {
+			paths[path] = true
+		}
+	}
+	for path := range paths {
+		if err := updateSQLiteThreadWorkspace(path, ids, targetCWD); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func restoreSessionSQLiteRows(rows []sessionSQLiteRow) error {
+	for dbPath, group := range rowsByDatabase(rows) {
+		byTable := map[string][]sessionSQLiteRow{}
+		for _, row := range group {
+			table := row.Table
+			if table == "" {
+				table = "threads"
+			}
+			byTable[table] = append(byTable[table], row)
+		}
+		for table, tableRows := range byTable {
+			if err := restoreSQLiteSessionRows(dbPath, table, tableRows); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateDeletedSessionRestorePaths(manifest deletedSessionManifest) error {
+	allowed := map[string]bool{}
+	for _, row := range manifest.Rows {
+		if path := strings.TrimSpace(stringFromAny(row.Values["rollout_path"])); path != "" {
+			allowed[filepath.Clean(normalizeRolloutPath(codexHomeDir(), path))] = true
+		}
+	}
+	for _, file := range manifest.Files {
+		original := filepath.Clean(strings.TrimSpace(file.OriginalPath))
+		if original == "." || original == "" {
+			return errors.New("备份包含空的会话恢复路径")
+		}
+		if allowed[original] {
+			continue
+		}
+		if manifest.Version >= 2 && manifestHasAutomationRows(manifest) && sessionRestorePathMatchesManifest(original, manifest) {
+			continue
+		}
+		// Legacy v1 backups did not store DB provenance; constrain them to Codex-owned rollout roots.
+		if manifest.Version <= 1 && (pathWithin(filepath.Join(codexHomeDir(), "sessions"), original) || pathWithin(filepath.Join(codexHomeDir(), "archived_sessions"), original)) {
+			continue
+		}
+		return fmt.Errorf("备份包含未授权的恢复路径：%s", original)
+	}
+	return nil
+}
+
+func manifestHasAutomationRows(manifest deletedSessionManifest) bool {
+	for _, row := range manifest.Rows {
+		if row.Table == "automation_runs" {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionRestorePathMatchesManifest(path string, manifest deletedSessionManifest) bool {
+	if !pathWithin(filepath.Join(codexHomeDir(), "sessions"), path) && !pathWithin(filepath.Join(codexHomeDir(), "archived_sessions"), path) {
+		return false
+	}
+	id := bareSessionID(manifest.SessionID)
+	return id != "" && strings.Contains(filepath.Base(path), id)
 }
 
 func sessionIDVariants(sessionID string) []string {
@@ -976,7 +1114,8 @@ func sqliteThreadRowsByIDs(dbPath string, ids []string) ([]sessionSQLiteRow, err
 		return nil, err
 	}
 	query := "SELECT * FROM threads WHERE id IN (" + sqlitePlaceholders(len(ids)) + ")"
-	return querySessionSQLiteRows(db, query, stringsToAny(ids)...)
+	rows, err := querySessionSQLiteRows(db, query, stringsToAny(ids)...)
+	return annotateSessionRows(rows, dbPath, "threads"), err
 }
 
 func sqliteThreadRowsByTitle(dbPath, title string, archivedOnly bool) ([]sessionSQLiteRow, error) {
@@ -999,11 +1138,13 @@ func sqliteThreadRowsByTitle(dbPath, title string, archivedOnly bool) ([]session
 	}
 	order := sqliteSortOrder(columns)
 	rows, err := querySessionSQLiteRows(db, "SELECT * FROM threads "+where+order+" LIMIT 5", title)
+	rows = annotateSessionRows(rows, dbPath, "threads")
 	if err != nil || len(rows) > 0 {
 		return rows, err
 	}
 	// Archived rows can be rendered with trimmed or decorated text in the UI, so keep a conservative normalized fallback.
-	return sqliteThreadRowsByNormalizedTitle(db, title, archivedOnly, columns)
+	rows, err = sqliteThreadRowsByNormalizedTitle(db, title, archivedOnly, columns)
+	return annotateSessionRows(rows, dbPath, "threads"), err
 }
 
 func sqliteAutomationRunRowsByIDs(dbPath string, ids []string) ([]sessionSQLiteRow, error) {
@@ -1021,7 +1162,8 @@ func sqliteAutomationRunRowsByIDs(dbPath string, ids []string) ([]sessionSQLiteR
 		return nil, err
 	}
 	query := "SELECT * FROM automation_runs WHERE thread_id IN (" + sqlitePlaceholders(len(ids)) + ")"
-	return querySessionSQLiteRows(db, query, stringsToAny(ids)...)
+	rows, err := querySessionSQLiteRows(db, query, stringsToAny(ids)...)
+	return annotateSessionRows(rows, dbPath, "automation_runs"), err
 }
 
 func sqliteAutomationRunRowsByTitle(dbPath, title string, archivedOnly bool) ([]sessionSQLiteRow, error) {
@@ -1052,10 +1194,12 @@ func sqliteAutomationRunRowsByTitle(dbPath, title string, archivedOnly bool) ([]
 		where += " AND COALESCE(status, '') = 'archived'"
 	}
 	rows, err := querySessionSQLiteRows(db, "SELECT * FROM automation_runs "+where+" LIMIT 5", title)
+	rows = annotateSessionRows(rows, dbPath, "automation_runs")
 	if err != nil || len(rows) > 0 {
 		return rows, err
 	}
-	return sqliteAutomationRunRowsByNormalizedTitle(db, title, archivedOnly, columns, titleColumn)
+	rows, err = sqliteAutomationRunRowsByNormalizedTitle(db, title, archivedOnly, columns, titleColumn)
+	return annotateSessionRows(rows, dbPath, "automation_runs"), err
 }
 
 func sqliteAutomationRunRowsByNormalizedTitle(db *sql.DB, title string, archivedOnly bool, columns []string, titleColumn string) ([]sessionSQLiteRow, error) {
@@ -1154,20 +1298,33 @@ func querySessionSQLiteRows(db *sql.DB, query string, args ...any) ([]sessionSQL
 }
 
 func deleteSQLiteThreadRows(dbPath string, ids []string) error {
+	return deleteSQLiteSessionRows(dbPath, "threads", ids)
+}
+
+func deleteSQLiteSessionRows(dbPath, table string, ids []string) error {
 	ids = uniqueNonEmptyStrings(ids)
 	if len(ids) == 0 || !fileExists(dbPath) {
 		return nil
+	}
+	idColumn := ""
+	switch table {
+	case "threads":
+		idColumn = "id"
+	case "automation_runs":
+		idColumn = "thread_id"
+	default:
+		return fmt.Errorf("unsupported session SQLite table %q", table)
 	}
 	db, err := openSQLite(dbPath)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	columns, err := sqliteTableColumns(db, "threads")
-	if err != nil || len(columns) == 0 || !containsString(columns, "id") {
+	columns, err := sqliteTableColumns(db, table)
+	if err != nil || len(columns) == 0 || !containsString(columns, idColumn) {
 		return err
 	}
-	_, err = db.Exec("DELETE FROM threads WHERE id IN ("+sqlitePlaceholders(len(ids))+")", stringsToAny(ids)...)
+	_, err = db.Exec("DELETE FROM "+quoteSQLiteIdentifier(table)+" WHERE "+quoteSQLiteIdentifier(idColumn)+" IN ("+sqlitePlaceholders(len(ids))+")", stringsToAny(ids)...)
 	return err
 }
 
@@ -1191,15 +1348,22 @@ func updateSQLiteThreadWorkspace(dbPath string, ids []string, targetCWD string) 
 }
 
 func restoreSQLiteThreadRows(dbPath string, rows []sessionSQLiteRow) error {
+	return restoreSQLiteSessionRows(dbPath, "threads", rows)
+}
+
+func restoreSQLiteSessionRows(dbPath, table string, rows []sessionSQLiteRow) error {
 	if len(rows) == 0 {
 		return nil
+	}
+	if table != "threads" && table != "automation_runs" {
+		return fmt.Errorf("unsupported session SQLite table %q", table)
 	}
 	db, err := openSQLite(dbPath)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	currentColumns, err := sqliteTableColumns(db, "threads")
+	currentColumns, err := sqliteTableColumns(db, table)
 	if err != nil {
 		return err
 	}
@@ -1224,7 +1388,7 @@ func restoreSQLiteThreadRows(dbPath string, rows []sessionSQLiteRow) error {
 		for index, column := range columns {
 			quoted[index] = quoteSQLiteIdentifier(column)
 		}
-		query := "INSERT OR REPLACE INTO threads (" + strings.Join(quoted, ", ") + ") VALUES (" + sqlitePlaceholders(len(columns)) + ")"
+		query := "INSERT OR REPLACE INTO " + quoteSQLiteIdentifier(table) + " (" + strings.Join(quoted, ", ") + ") VALUES (" + sqlitePlaceholders(len(columns)) + ")"
 		if _, err := db.Exec(query, args...); err != nil {
 			return err
 		}

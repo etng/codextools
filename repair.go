@@ -482,6 +482,9 @@ func discoverCodexMarketplaces(home string) []marketplaceSpec {
 	paths := []marketplaceSpec{
 		{Name: "openai-bundled", Source: filepath.Join(home, ".tmp", "bundled-marketplaces", "openai-bundled")},
 		{Name: "openai-curated", Source: filepath.Join(home, ".tmp", "plugins")},
+		{Name: "openai-api-curated", Source: filepath.Join(home, ".tmp", "plugins")},
+		{Name: "openai-curated-remote", Source: filepath.Join(home, ".tmp", "plugins-remote")},
+		{Name: "role-specific-plugins", Source: filepath.Join(home, ".tmp", "marketplaces", "role-specific-plugins")},
 	}
 	if userHome, err := os.UserHomeDir(); err == nil && userHome != "" {
 		paths = append(paths, marketplaceSpec{Name: "openai-primary-runtime", Source: filepath.Join(userHome, ".cache", "codex-runtimes", "codex-primary-runtime", "plugins", "openai-primary-runtime")})
@@ -504,7 +507,7 @@ func codexMarketplaceExists(path string) bool {
 
 func discoverCachedPluginEnables(home string) []pluginEnableSpec {
 	cacheRoot := filepath.Join(home, "plugins", "cache")
-	marketplaces := []string{"openai-curated", "openai-primary-runtime", "openai-bundled"}
+	marketplaces := []string{"openai-curated", "openai-api-curated", "openai-curated-remote", "role-specific-plugins", "openai-primary-runtime", "openai-bundled"}
 	var plugins []pluginEnableSpec
 	seen := map[string]bool{}
 	for _, marketplace := range marketplaces {
@@ -751,7 +754,11 @@ func runProviderSyncLocked(home string) providerSyncResult {
 			rewriteChanges = append(rewriteChanges, change)
 		}
 	}
-	sqliteCount := countSQLiteUpdates(filepath.Join(home, "state_5.sqlite"), targetProvider, changes)
+	sqlitePaths := codexSessionDBPaths(home)
+	sqliteCount := 0
+	for _, path := range sqlitePaths {
+		sqliteCount += countSQLiteUpdates(path, targetProvider, changes)
+	}
 	globalCount, err := countGlobalStateUpdates(filepath.Join(home, ".codex-global-state.json"), changes)
 	if err != nil {
 		return providerSyncResult{Status: "skipped", Message: "Provider sync skipped: " + err.Error(), TargetProvider: targetProvider}
@@ -774,25 +781,33 @@ func runProviderSyncLocked(home string) providerSyncResult {
 	if err != nil {
 		return providerSyncFailureBeforeMutation(targetProvider, backupDir, err)
 	}
+	databaseSnapshots, err := captureProviderSyncDatabaseSnapshots(sqlitePaths)
+	if err != nil {
+		return providerSyncFailureBeforeMutation(targetProvider, backupDir, err)
+	}
 	if err := applySessionChanges(rewriteChanges); err != nil {
 		return providerSyncSessionFailure(targetProvider, backupDir, err)
 	}
 	if err := ensureProviderSyncWritersStopped(); err != nil {
-		rollbackErr := rollbackProviderSyncFiles(rewriteChanges, globalSnapshot)
+		rollbackErr := rollbackProviderSyncFiles(rewriteChanges, globalSnapshot, databaseSnapshots)
 		return providerSyncRollbackFailure(targetProvider, backupDir, err, rollbackErr)
 	}
 	if _, err := applyProviderSyncGlobalStateUpdate(globalPath, changes); err != nil {
-		rollbackErr := rollbackProviderSyncFiles(rewriteChanges, globalSnapshot)
+		rollbackErr := rollbackProviderSyncFiles(rewriteChanges, globalSnapshot, databaseSnapshots)
 		return providerSyncRollbackFailure(targetProvider, backupDir, err, rollbackErr)
 	}
 	if err := ensureProviderSyncWritersStopped(); err != nil {
-		rollbackErr := rollbackProviderSyncFiles(rewriteChanges, globalSnapshot)
+		rollbackErr := rollbackProviderSyncFiles(rewriteChanges, globalSnapshot, databaseSnapshots)
 		return providerSyncRollbackFailure(targetProvider, backupDir, err, rollbackErr)
 	}
-	sqliteRows, sqliteErr := applySQLiteUpdates(filepath.Join(home, "state_5.sqlite"), targetProvider, changes)
-	if sqliteErr != nil {
-		rollbackErr := rollbackProviderSyncFiles(rewriteChanges, globalSnapshot)
-		return providerSyncRollbackFailure(targetProvider, backupDir, sqliteErr, rollbackErr)
+	sqliteRows := 0
+	for _, path := range sqlitePaths {
+		updated, sqliteErr := applySQLiteUpdates(path, targetProvider, changes)
+		if sqliteErr != nil {
+			rollbackErr := rollbackProviderSyncFiles(rewriteChanges, globalSnapshot, databaseSnapshots)
+			return providerSyncRollbackFailure(targetProvider, backupDir, sqliteErr, rollbackErr)
+		}
+		sqliteRows += updated
 	}
 	pruneProviderSyncBackups(home)
 	return providerSyncResult{Status: "synced", Message: "Provider sync complete", TargetProvider: targetProvider, BackupDir: &backupDir, ChangedSessionFiles: len(rewriteChanges), SQLiteRowsUpdated: sqliteRows}
@@ -917,13 +932,38 @@ func providerSyncRollbackFailure(targetProvider, backupDir string, operationErr,
 	return providerSyncResult{Status: "failed", Message: message, TargetProvider: targetProvider, BackupDir: &backupDir, Partial: true, RollbackStatus: "rollback_failed"}
 }
 
-func rollbackProviderSyncFiles(changes []sessionChange, globalSnapshot providerSyncFileSnapshot) error {
+func rollbackProviderSyncFiles(changes []sessionChange, globalSnapshot providerSyncFileSnapshot, databaseSnapshots []providerSyncFileSnapshot) error {
 	if err := ensureProviderSyncWritersStopped(); err != nil {
 		return fmt.Errorf("rollback not attempted because a history writer is active: %w", err)
 	}
+	databaseErr := restoreProviderSyncDatabaseSnapshots(databaseSnapshots)
 	globalErr := restoreProviderSyncFileSnapshot(globalSnapshot)
 	sessionErr := restoreSessionChanges(changes)
-	return errors.Join(globalErr, sessionErr)
+	return errors.Join(databaseErr, globalErr, sessionErr)
+}
+
+func captureProviderSyncDatabaseSnapshots(paths []string) ([]providerSyncFileSnapshot, error) {
+	snapshots := make([]providerSyncFileSnapshot, 0, len(paths)*3)
+	for _, path := range paths {
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			snapshot, err := captureProviderSyncFileSnapshot(path + suffix)
+			if err != nil {
+				return nil, fmt.Errorf("capture SQLite snapshot %s: %w", path+suffix, err)
+			}
+			snapshots = append(snapshots, snapshot)
+		}
+	}
+	return snapshots, nil
+}
+
+func restoreProviderSyncDatabaseSnapshots(snapshots []providerSyncFileSnapshot) error {
+	var restoreErrors []error
+	for index := len(snapshots) - 1; index >= 0; index-- {
+		if err := restoreProviderSyncFileSnapshot(snapshots[index]); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("%s: %w", snapshots[index].Path, err))
+		}
+	}
+	return errors.Join(restoreErrors...)
 }
 
 func providerSyncLockStale(lockDir string, now time.Time) (bool, string) {
@@ -1263,10 +1303,21 @@ func createProviderSyncBackup(home, targetProvider string, changes []sessionChan
 			return fail(fmt.Errorf("备份 %s 失败：%w", name, err))
 		}
 	}
-	dbDir := filepath.Join(backupDir, "db")
-	for _, name := range []string{"state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"} {
-		if _, err := copyProviderSyncBackupFileIfExists(filepath.Join(home, name), filepath.Join(dbDir, name)); err != nil {
-			return fail(fmt.Errorf("备份 %s 失败：%w", name, err))
+	databaseManifest := make([]map[string]any, 0)
+	for index, dbPath := range codexSessionDBPaths(home) {
+		name := fmt.Sprintf("%02d-%s", index+1, filepath.Base(dbPath))
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			backupRelative := filepath.Join("db", name+suffix)
+			copied, err := copyProviderSyncBackupFileIfExists(dbPath+suffix, filepath.Join(backupDir, backupRelative))
+			if err != nil {
+				return fail(fmt.Errorf("备份 %s 失败：%w", dbPath+suffix, err))
+			}
+			if copied {
+				databaseManifest = append(databaseManifest, map[string]any{
+					"path":       dbPath + suffix,
+					"backupPath": filepath.ToSlash(backupRelative),
+				})
+			}
 		}
 	}
 	manifest := make([]map[string]any, 0, len(changes))
@@ -1298,7 +1349,11 @@ func createProviderSyncBackup(home, targetProvider string, changes []sessionChan
 	if err := atomicWriteJSON(filepath.Join(backupDir, "session-meta-backup.json"), manifest); err != nil {
 		return fail(err)
 	}
-	if err := atomicWriteJSON(filepath.Join(backupDir, "metadata.json"), map[string]any{"managedBy": "ChatGPT Codex Tools provider sync", "targetProvider": targetProvider}); err != nil {
+	if err := atomicWriteJSON(filepath.Join(backupDir, "metadata.json"), map[string]any{
+		"managedBy":       "ChatGPT Codex Tools provider sync",
+		"targetProvider":  targetProvider,
+		"databaseBackups": databaseManifest,
+	}); err != nil {
 		return fail(err)
 	}
 	return backupDir, nil

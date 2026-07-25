@@ -542,9 +542,10 @@ func TestNormalizeCodexAppPathRejectsCodexToolsMacApps(t *testing.T) {
 	}
 }
 
-func TestRendererInjectionKeepsPluginInstallWithoutMarketplaceRuntimePatches(t *testing.T) {
+func TestRendererInjectionUsesVersionGatedMarketplaceAndAutoExpandStrategy(t *testing.T) {
 	for _, required := range []string{
-		`forcePluginInstall`,
+		`pluginMarketplaceUnlock`,
+		`pluginAutoExpand`,
 		`pluginPatchDisabledInRelayMode`,
 		`activeRelayModeSupportsOfficialSites`,
 		`activeRelayMode: "official"`,
@@ -562,29 +563,29 @@ func TestRendererInjectionKeepsPluginInstallWithoutMarketplaceRuntimePatches(t *
 		`compareCodexVersions`,
 		`codexPluginUnlockStrategy`,
 		`plugin_unlock_strategy_selected`,
-		`pluginUnlockStrategy === "legacy"`,
+		`pluginUnlockStrategy === "modern"`,
 		`pluginUnlockStrategy === "unknown"`,
-		`unblockPluginInstallButtons`,
-		`threadIdBadge`,
-		`showSaveFilePicker`,
-		`patchReactModelStateNodes`,
-		`强制安装`,
-	} {
-		if !strings.Contains(rendererInjectScript, required) {
-			t.Fatalf("renderer injection should keep supported plugin controls; missing %q", required)
-		}
-	}
-	for _, forbidden := range []string{
-		`pluginAutoExpand`,
-		`pluginMarketplaceUnlock`,
 		`installPluginBuildFlavorFilterPatch`,
 		`installPluginMarketplaceBridgePatch`,
 		`installPluginMarketplaceWindowEventPatchOnly`,
 		`installPluginMarketplaceRequestPatch`,
 		`mergeLocalPluginMarketplaces`,
 		`__CODEX_PLUS_PLUGIN_MARKETPLACES__`,
+		`plugin_marketplace_local_merged`,
 		`plugin_auto_expand_finished`,
 		`schedulePluginAutoExpand`,
+		`threadIdBadge`,
+		`showSaveFilePicker`,
+		`patchReactModelStateNodes`,
+	} {
+		if !strings.Contains(rendererInjectScript, required) {
+			t.Fatalf("renderer injection should keep supported plugin controls; missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`forcePluginInstall`,
+		`unblockPluginInstallButtons`,
+		`强制安装`,
 		`/ads`,
 		`load_ads`,
 		`RecommendationsScreen`,
@@ -595,7 +596,7 @@ func TestRendererInjectionKeepsPluginInstallWithoutMarketplaceRuntimePatches(t *
 		`请作者喝咖啡`,
 	} {
 		if strings.Contains(rendererInjectScript, forbidden) {
-			t.Fatalf("renderer injection should not include removed marketplace/auto-expand patches or ads; found %q", forbidden)
+			t.Fatalf("renderer injection should not include removed force-install patches or ads; found %q", forbidden)
 		}
 	}
 }
@@ -1002,8 +1003,9 @@ func TestSettingsDefaultsIncludeCodexPlusV1224Fields(t *testing.T) {
 
 	for _, key := range []string{
 		"codexAppForceChineseLocale",
-		"codexAppFastStartup",
 		"codexAppNativeMenuLocalization",
+		"codexAppPluginMarketplaceUnlock",
+		"codexAppPluginAutoExpand",
 	} {
 		if !boolFromAny(value[key]) {
 			t.Fatalf("bridge settings should default %s to true: %#v", key, value)
@@ -1011,6 +1013,21 @@ func TestSettingsDefaultsIncludeCodexPlusV1224Fields(t *testing.T) {
 	}
 	if boolFromAny(value["codexAppPasteFix"]) {
 		t.Fatalf("paste fix should default false: %#v", value)
+	}
+	if boolFromAny(value["codexAppFastStartup"]) {
+		t.Fatalf("fast startup should default false: %#v", value)
+	}
+	if got := stringFromAny(value["codexAppImageOverlayFitMode"]); got != "fit" {
+		t.Fatalf("image overlay fit mode should default to fit, got %q", got)
+	}
+}
+
+func TestDeprecatedPluginSettingsAreNotExposedByBridge(t *testing.T) {
+	value := (&launcherRuntime{}).bridgeSettingsValue(defaultSettings())
+	for _, key := range []string{"codexAppPluginEntryUnlock", "codexAppForcePluginInstall"} {
+		if _, ok := value[key]; ok {
+			t.Fatalf("deprecated setting %s should not be exposed: %#v", key, value)
+		}
 	}
 }
 
@@ -1322,6 +1339,8 @@ func TestSaveSettingsPreservesUnknownTopLevelFields(t *testing.T) {
 	t.Setenv("HOME", home)
 	writeTestFile(t, settingsPath(), `{
   "futureFeature": {"enabled": true, "mode": "next"},
+  "codexAppPluginEntryUnlock": true,
+  "codexAppForcePluginInstall": true,
   "codexAppPath": "",
   "relayProfiles": [{"id":"default","name":"Default","protocol":"responses","relayMode":"official"}],
   "activeRelayId": "default"
@@ -1342,6 +1361,11 @@ func TestSaveSettingsPreservesUnknownTopLevelFields(t *testing.T) {
 	}
 	if !strings.Contains(string(raw["futureFeature"]), `"mode": "next"`) {
 		t.Fatalf("unknown field value changed: %s", string(raw["futureFeature"]))
+	}
+	for _, key := range []string{"codexAppPluginEntryUnlock", "codexAppForcePluginInstall"} {
+		if string(raw[key]) != "true" {
+			t.Fatalf("deprecated unknown field %s should remain byte-compatible, got %s", key, raw[key])
+		}
 	}
 }
 
@@ -2398,11 +2422,12 @@ func TestRepairCodexPluginConfigRestoresCachedPluginTables(t *testing.T) {
 	if pluginCount != 2 {
 		t.Fatalf("plugin count mismatch: %d", pluginCount)
 	}
-	if marketplaceCount != 1 {
+	if marketplaceCount != 2 {
 		t.Fatalf("marketplace count mismatch: %d", marketplaceCount)
 	}
 	for _, expected := range []string{
 		`[marketplaces.openai-curated]`,
+		`[marketplaces.openai-api-curated]`,
 		`source = "` + filepath.Join(home, ".tmp", "plugins") + `"`,
 		`[plugins."browser@openai-bundled"]`,
 		`[plugins."github@openai-curated"]`,
@@ -2430,7 +2455,7 @@ func TestRepairCodexPluginConfigCorrectsMarketplaceSource(t *testing.T) {
 		``,
 	}, "\n"))
 
-	if marketplaceCount != 1 {
+	if marketplaceCount != 2 {
 		t.Fatalf("marketplace count mismatch: %d", marketplaceCount)
 	}
 	if strings.Contains(updated, `/stale/plugins`) {

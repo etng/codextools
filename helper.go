@@ -342,6 +342,13 @@ func (r *launcherRuntime) forwardRelayProxy(w http.ResponseWriter, req *http.Req
 }
 
 func forwardRelayProxyAttempt(settings backendSettings, w http.ResponseWriter, req *http.Request, body []byte, profile relayProfile, attempt, candidateCount int) bool {
+	proxyBody, protocolContext, protocolErr := convertResponsesRequestForProfile(profile, req.URL.Path, body)
+	if protocolErr != nil {
+		writeHelperJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": protocolErr.Error(), "type": "invalid_request_error"}})
+		recordRelayRequestFailure(settings)
+		return true
+	}
+	body = proxyBody
 	baseURL := relayProxyBaseURL(effectiveUpstreamBaseURL(profile), profile.Protocol)
 	apiKey := strings.TrimSpace(profile.APIKey)
 	decision := relayRouteDecision{body: body, route: "text", reason: "default_text"}
@@ -361,7 +368,7 @@ func forwardRelayProxyAttempt(settings backendSettings, w http.ResponseWriter, r
 		recordRelayRequestFailure(settings)
 		return true
 	}
-	target := relayTargetURL(baseURL, req.URL.Path)
+	target := protocolProxyTargetURL(profile, req.URL.Path, protocolContext.Converted)
 	if decision.useImageAPI {
 		target = relayImageTargetURL(baseURL, req.URL.Path)
 	}
@@ -379,6 +386,11 @@ func forwardRelayProxyAttempt(settings backendSettings, w http.ResponseWriter, r
 	upstreamReq.Header.Set("authorization", "Bearer "+apiKey)
 	copyProxyHeaders(req.Header, upstreamReq.Header)
 	setRelayProxyUserAgent(profile.UserAgent, req.Header, upstreamReq.Header)
+	upstreamReq.Header.Set("content-type", "application/json")
+	if protocolContext.Stream {
+		upstreamReq.Header.Set("accept", "text/event-stream")
+		upstreamReq.Header.Set("cache-control", "no-cache")
+	}
 	upstreamReq.Header.Set("accept-encoding", "identity")
 	client, err := relayHTTPClient(profile)
 	if err != nil {
@@ -431,17 +443,12 @@ func forwardRelayProxyAttempt(settings backendSettings, w http.ResponseWriter, r
 		return false
 	}
 	writeCORSHeaders(w)
-	for _, name := range []string{"content-type", "cache-control", "openai-request-id", "x-request-id"} {
+	for _, name := range []string{"cache-control", "openai-request-id", "x-request-id"} {
 		if value := resp.Header.Get(name); value != "" {
 			w.Header().Set(name, value)
 		}
 	}
-	if w.Header().Get("content-type") == "" {
-		w.Header().Set("content-type", "application/json")
-	}
-	w.WriteHeader(resp.StatusCode)
-	flushRelayResponseHeaders(w)
-	responseBytes, copyErr := copyRelayResponseBody(w, resp.Body)
+	responseBytes, copyErr := writeProtocolProxyResponse(w, resp, protocolContext)
 	logDetail := map[string]any{
 		"path":                req.URL.Path,
 		"status":              resp.StatusCode,
@@ -450,6 +457,7 @@ func forwardRelayProxyAttempt(settings backendSettings, w http.ResponseWriter, r
 		"reason":              decision.reason,
 		"key_source":          decision.keySource,
 		"stripped_image_tool": decision.strippedImageTool,
+		"wire_api":            map[bool]string{true: "chatCompletions", false: profile.Protocol}[protocolContext.Converted],
 		"relay_id":            profile.ID,
 		"relay_name":          profile.Name,
 		"attempt":             attempt,
@@ -619,7 +627,11 @@ func decideRelayRouteForPath(path string, body []byte, profile relayProfile) rel
 	decision := relayRouteDecision{body: body, route: "text", reason: "default_text", keySource: "default"}
 	var value map[string]any
 	if json.Unmarshal(body, &value) != nil {
-		decision.reason = "invalid_json"
+		if len(bytes.TrimSpace(body)) == 0 {
+			decision.reason = "empty_body"
+		} else {
+			decision.reason = "invalid_json"
+		}
 		if usesSeparateImageGenerationAPI(profile) && relayPathRequestsImageGeneration(path) {
 			decision.useImageAPI = true
 			decision.route = "image"
@@ -630,8 +642,10 @@ func decideRelayRouteForPath(path string, body []byte, profile relayProfile) rel
 	}
 
 	if !profile.ImageGenerationEnabled {
-		decision.reason = "image_disabled"
 		decision.body, decision.strippedImageTool = stripImageGenerationTools(value, body)
+		if decision.strippedImageTool {
+			decision.reason = "image_disabled"
+		}
 		return decision
 	}
 

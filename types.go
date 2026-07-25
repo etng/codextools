@@ -19,8 +19,8 @@ type backendSettings struct {
 	RelayProfilesEnabled             bool                    `json:"relayProfilesEnabled"`
 	CCSLinkEnabled                   bool                    `json:"ccsLinkEnabled"`
 	Enhancements                     bool                    `json:"enhancementsEnabled"`
-	CodexAppPluginEntryUnlock        bool                    `json:"codexAppPluginEntryUnlock"`
-	CodexAppForcePluginInstall       bool                    `json:"codexAppForcePluginInstall"`
+	CodexAppPluginMarketplaceUnlock  bool                    `json:"codexAppPluginMarketplaceUnlock"`
+	CodexAppPluginAutoExpand         bool                    `json:"codexAppPluginAutoExpand"`
 	CodexAppModelWhitelistUnlock     bool                    `json:"codexAppModelWhitelistUnlock"`
 	CodexAppSessionDelete            bool                    `json:"codexAppSessionDelete"`
 	CodexAppMarkdownExport           bool                    `json:"codexAppMarkdownExport"`
@@ -44,6 +44,7 @@ type backendSettings struct {
 	CodexAppImageOverlayEnabled      bool                    `json:"codexAppImageOverlayEnabled"`
 	CodexAppImageOverlayPath         string                  `json:"codexAppImageOverlayPath"`
 	CodexAppImageOverlayOpacity      int                     `json:"codexAppImageOverlayOpacity"`
+	CodexAppImageOverlayFitMode      string                  `json:"codexAppImageOverlayFitMode"`
 	CodexGoalsEnabled                bool                    `json:"codexGoalsEnabled"`
 	MobileControlEnabled             bool                    `json:"mobileControlEnabled"`
 	MobileControlRelayURL            string                  `json:"mobileControlRelayUrl"`

@@ -106,12 +106,13 @@ func defaultSettings() backendSettings {
 		ProviderSyncManualProviders:     []string{},
 		RelayProfilesEnabled:            true,
 		Enhancements:                    true,
-		CodexAppForcePluginInstall:      true,
+		CodexAppPluginMarketplaceUnlock: true,
+		CodexAppPluginAutoExpand:        true,
 		CodexAppModelWhitelistUnlock:    true,
 		CodexAppSessionDelete:           true,
 		CodexAppMarkdownExport:          true,
 		CodexAppForceChineseLocale:      true,
-		CodexAppFastStartup:             true,
+		CodexAppFastStartup:             false,
 		CodexAppProjectMove:             true,
 		CodexAppThreadScrollRestore:     true,
 		CodexAppZedRemoteOpen:           true,
@@ -121,6 +122,7 @@ func defaultSettings() backendSettings {
 		ZedRemoteOpenStrategy:           "addToFocusedWorkspace",
 		ZedRemoteProjectRegistryEnabled: true,
 		CodexAppImageOverlayOpacity:     35,
+		CodexAppImageOverlayFitMode:     "fit",
 		LaunchMode:                      "patch",
 		RelayProfiles:                   []relayProfile{defaultRelayProfile()},
 		AggregateRelayProfiles:          []aggregateRelayProfile{},
@@ -192,7 +194,6 @@ func normalizeSettings(settings backendSettings) backendSettings {
 		settings.ProviderSyncManualProviders = []string{}
 	}
 	settings.Language = normalizeLanguage(settings.Language)
-	settings = normalizeDefaultEnabledSettings(settings)
 	settings.ZedRemoteOpenStrategy = normalizeZedOpenStrategy(settings.ZedRemoteOpenStrategy)
 	if settings.CodexAppImageOverlayOpacity <= 0 {
 		settings.CodexAppImageOverlayOpacity = 35
@@ -204,6 +205,7 @@ func normalizeSettings(settings backendSettings) backendSettings {
 		settings.CodexAppImageOverlayOpacity = 1
 	}
 	settings.CodexAppImageOverlayPath = strings.TrimSpace(settings.CodexAppImageOverlayPath)
+	settings.CodexAppImageOverlayFitMode = normalizeImageOverlayFitMode(settings.CodexAppImageOverlayFitMode)
 	settings.MobileControlRelayURL = strings.TrimSpace(settings.MobileControlRelayURL)
 	settings.MobileControlRoom = strings.TrimSpace(settings.MobileControlRoom)
 	settings.MobileControlKey = strings.TrimSpace(settings.MobileControlKey)
@@ -336,56 +338,6 @@ func normalizeAggregateRelayStrategy(value string) string {
 	}
 }
 
-func normalizeDefaultEnabledSettings(settings backendSettings) backendSettings {
-	defaults := defaultEnabledSettingsFromRaw()
-	if !settings.RelayProfilesEnabled && !defaults["relayProfilesEnabled"] {
-		settings.RelayProfilesEnabled = true
-	}
-	if !settings.Enhancements && !defaults["enhancementsEnabled"] {
-		settings.Enhancements = true
-	}
-	if !settings.CodexAppForcePluginInstall && !defaults["codexAppForcePluginInstall"] {
-		settings.CodexAppForcePluginInstall = true
-	}
-	if !settings.CodexAppModelWhitelistUnlock && !defaults["codexAppModelWhitelistUnlock"] {
-		settings.CodexAppModelWhitelistUnlock = true
-	}
-	if !settings.CodexAppSessionDelete && !defaults["codexAppSessionDelete"] {
-		settings.CodexAppSessionDelete = true
-	}
-	if !settings.CodexAppMarkdownExport && !defaults["codexAppMarkdownExport"] {
-		settings.CodexAppMarkdownExport = true
-	}
-	if !settings.CodexAppForceChineseLocale && !defaults["codexAppForceChineseLocale"] {
-		settings.CodexAppForceChineseLocale = true
-	}
-	if !settings.CodexAppFastStartup && !defaults["codexAppFastStartup"] {
-		settings.CodexAppFastStartup = true
-	}
-	if !settings.CodexAppProjectMove && !defaults["codexAppProjectMove"] {
-		settings.CodexAppProjectMove = true
-	}
-	if !settings.CodexAppThreadScrollRestore && !defaults["codexAppThreadScrollRestore"] {
-		settings.CodexAppThreadScrollRestore = true
-	}
-	if !settings.CodexAppZedRemoteOpen && !defaults["codexAppZedRemoteOpen"] {
-		settings.CodexAppZedRemoteOpen = true
-	}
-	if !settings.CodexAppUpstreamWorktreeCreate && !defaults["codexAppUpstreamWorktreeCreate"] {
-		settings.CodexAppUpstreamWorktreeCreate = true
-	}
-	if !settings.CodexAppNativeMenuPlacement && !defaults["codexAppNativeMenuPlacement"] {
-		settings.CodexAppNativeMenuPlacement = true
-	}
-	if !settings.CodexAppNativeMenuLocalization && !defaults["codexAppNativeMenuLocalization"] {
-		settings.CodexAppNativeMenuLocalization = true
-	}
-	if !settings.ZedRemoteProjectRegistryEnabled && !defaults["zedRemoteProjectRegistryEnabled"] {
-		settings.ZedRemoteProjectRegistryEnabled = true
-	}
-	return settings
-}
-
 func normalizeZedOpenStrategy(value string) string {
 	switch strings.TrimSpace(value) {
 	case "reuseWindow", "newWindow", "default", "addToFocusedWorkspace":
@@ -395,38 +347,13 @@ func normalizeZedOpenStrategy(value string) string {
 	}
 }
 
-func defaultEnabledSettingsFromRaw() map[string]bool {
-	data, err := os.ReadFile(settingsPath())
-	if err != nil {
-		return map[string]bool{}
+func normalizeImageOverlayFitMode(value string) string {
+	switch strings.TrimSpace(value) {
+	case "fit", "fill", "stretch", "tile", "center":
+		return strings.TrimSpace(value)
+	default:
+		return "fit"
 	}
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return map[string]bool{}
-	}
-	out := map[string]bool{}
-	for _, key := range []string{
-		"relayProfilesEnabled",
-		"enhancementsEnabled",
-		"codexAppForcePluginInstall",
-		"codexAppModelWhitelistUnlock",
-		"codexAppSessionDelete",
-		"codexAppMarkdownExport",
-		"codexAppPasteFix",
-		"codexAppForceChineseLocale",
-		"codexAppFastStartup",
-		"codexAppProjectMove",
-		"codexAppThreadIdBadge",
-		"codexAppThreadScrollRestore",
-		"codexAppZedRemoteOpen",
-		"codexAppUpstreamWorktreeCreate",
-		"codexAppNativeMenuPlacement",
-		"codexAppNativeMenuLocalization",
-		"zedRemoteProjectRegistryEnabled",
-	} {
-		_, out[key] = raw[key]
-	}
-	return out
 }
 
 func migrateOfficialAuthBinding(settings backendSettings) (backendSettings, bool) {
@@ -591,7 +518,7 @@ func pendingProviderImportPayload() any {
 }
 
 func (s *server) saveSettings(args map[string]any) commandResult {
-	var settings backendSettings
+	settings := loadSettings()
 	if err := remarshal(args["settings"], &settings); err != nil {
 		return failed("保存设置失败："+err.Error(), settingsPayloadValue(loadSettings()))
 	}

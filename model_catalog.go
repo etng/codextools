@@ -449,6 +449,9 @@ func modelsEndpoint(baseURL string) string {
 	if cleaned == "" {
 		return ""
 	}
+	if strings.HasSuffix(strings.ToLower(cleaned), "/chat/completions") {
+		cleaned = cleaned[:len(cleaned)-len("/chat/completions")]
+	}
 	if strings.HasSuffix(cleaned, "/models") {
 		return cleaned
 	}

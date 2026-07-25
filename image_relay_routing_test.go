@@ -87,6 +87,30 @@ func TestImageRelayUsesImageEndpointKeyAndHTTPProxyOnlyForImageRequests(t *testi
 	}
 }
 
+func TestRelayRouteReasonOnlyReportsImageDisabledWhenToolWasRemoved(t *testing.T) {
+	profile := relayProfile{
+		Protocol:               "responses",
+		ImageGenerationEnabled: false,
+	}
+
+	empty := decideRelayRouteForPath("/v1/models", nil, profile)
+	if empty.reason != "empty_body" {
+		t.Fatalf("an ordinary bodyless request should not be reported as invalid JSON: %#v", empty)
+	}
+
+	textBody := []byte(`{"model":"gpt-test","input":"implement a parser"}`)
+	text := decideRelayRouteForPath("/v1/responses", textBody, profile)
+	if text.reason != "default_text" || text.strippedImageTool {
+		t.Fatalf("an ordinary text request should not be reported as image-disabled routing: %#v", text)
+	}
+
+	imageToolBody := []byte(`{"model":"gpt-test","input":"implement a parser","tools":[{"type":"image_generation"},{"type":"web_search"}]}`)
+	stripped := decideRelayRouteForPath("/v1/responses", imageToolBody, profile)
+	if stripped.reason != "image_disabled" || !stripped.strippedImageTool {
+		t.Fatalf("image-disabled routing should be reported only when the tool was removed: %#v", stripped)
+	}
+}
+
 func TestImageRelayTargetAcceptsBaseAndCompleteEndpoints(t *testing.T) {
 	tests := []struct {
 		name    string

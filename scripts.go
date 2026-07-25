@@ -199,15 +199,16 @@ func saveUserScriptConfig(config userScriptConfig) error {
 	return atomicWriteJSON(userScriptsConfigPath(), config)
 }
 
-func userScriptInventoryValue() map[string]any {
-	inventory := scanUserScripts()
+func userScriptInventoryValue(runtimeStatus ...any) map[string]any {
+	inventory := scanUserScripts(runtimeStatus...)
 	return map[string]any{
 		"enabled": inventory.Enabled, "builtin_dir": inventory.BuiltinDir, "user_dir": inventory.UserDir, "scripts": inventory.Scripts,
 	}
 }
 
-func scanUserScripts() userScriptInventory {
+func scanUserScripts(runtimeStatus ...any) userScriptInventory {
 	config := loadUserScriptConfig()
+	runtimeScripts := userScriptRuntimeStatusMap(runtimeStatus)
 	inventory := userScriptInventory{Enabled: config.Enabled, BuiltinDir: builtinUserScriptsDir(), UserDir: userScriptsDir(), Scripts: []userScriptInventoryItem{}}
 	_ = os.MkdirAll(userScriptsDir(), 0o755)
 	appendScripts := func(source, dir string) {
@@ -226,10 +227,14 @@ func scanUserScripts() userScriptInventory {
 				enabled = true
 			}
 			status := "not_loaded"
+			errorText := ""
 			if !config.Enabled || !enabled {
 				status = "disabled"
+			} else if live, ok := runtimeScripts[key]; ok {
+				status = normalizeUserScriptRuntimeStatus(stringFromAny(live["status"]))
+				errorText = truncateRunes(stringFromAny(live["error"]), 4000)
 			}
-			item := userScriptInventoryItem{Key: key, Name: entry.Name(), Source: source, Enabled: enabled, Status: status, Error: ""}
+			item := userScriptInventoryItem{Key: key, Name: entry.Name(), Source: source, Enabled: enabled, Status: status, Error: errorText}
 			if market, ok := config.Market[key]; ok {
 				item.MarketID = market.ID
 				item.Version = market.Version
@@ -243,6 +248,38 @@ func scanUserScripts() userScriptInventory {
 	appendScripts("builtin", inventory.BuiltinDir)
 	appendScripts("user", inventory.UserDir)
 	return inventory
+}
+
+func userScriptRuntimeStatusMap(values []any) map[string]map[string]any {
+	if len(values) == 0 || values[0] == nil {
+		return nil
+	}
+	raw, ok := values[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if nested, ok := raw["scripts"].(map[string]any); ok {
+		raw = nested
+	}
+	out := map[string]map[string]any{}
+	for key, value := range raw {
+		key = strings.TrimSpace(key)
+		item, ok := value.(map[string]any)
+		if !ok || key == "" || len(key) > 512 {
+			continue
+		}
+		out[key] = item
+	}
+	return out
+}
+
+func normalizeUserScriptRuntimeStatus(value string) string {
+	switch strings.TrimSpace(value) {
+	case "loaded", "failed", "loading", "not_loaded":
+		return strings.TrimSpace(value)
+	default:
+		return "not_loaded"
+	}
 }
 
 func (s *server) setUserScriptEnabled(key string, enabled bool) commandResult {
