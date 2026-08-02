@@ -210,7 +210,7 @@ func normalizeSettings(settings backendSettings) backendSettings {
 	settings.MobileControlRoom = strings.TrimSpace(settings.MobileControlRoom)
 	settings.MobileControlKey = strings.TrimSpace(settings.MobileControlKey)
 	common, extractedContext := splitContextConfigSections(settings.RelayCommonConfigContents)
-	settings.RelayCommonConfigContents = normalizeConfigText(common)
+	settings.RelayCommonConfigContents = sanitizeCommonRelayConfig(common)
 	settings.RelayContextConfigContents = normalizeConfigText(joinConfigSections(settings.RelayContextConfigContents, extractedContext))
 	if settings.LaunchMode != "patch" && settings.LaunchMode != "relay" {
 		settings.LaunchMode = "patch"

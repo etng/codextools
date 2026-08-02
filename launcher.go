@@ -952,7 +952,15 @@ func cdpTargetsAvailable(debugPort uint16, timeout time.Duration) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	targets, err := listCDPTargets(ctx, debugPort)
-	return err == nil && len(targets) > 0
+	if err != nil {
+		return false
+	}
+	for _, target := range targets {
+		if isPrimaryCodexCDPPageTarget(target) {
+			return true
+		}
+	}
+	return false
 }
 
 func chatGPTCDPTargetAvailable(debugPort uint16, timeout time.Duration) bool {
@@ -963,7 +971,7 @@ func chatGPTCDPTargetAvailable(debugPort uint16, timeout time.Duration) bool {
 		return false
 	}
 	for _, target := range targets {
-		if isCodexCDPPageTarget(target) {
+		if isPrimaryCodexCDPPageTarget(target) {
 			return true
 		}
 	}

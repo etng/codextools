@@ -219,14 +219,18 @@ func appendResponsesInput(input any, messages *[]any) {
 				}
 			default:
 				flushCalls()
-				role := stringFromAny(item["role"])
-				if role == "" && item["content"] == nil {
+				content, hasContent := item["content"]
+				if !hasContent {
 					continue
 				}
+				role := stringFromAny(item["role"])
 				if role == "" {
 					role = "user"
 				}
-				message := map[string]any{"role": role, "content": responsesContentToChat(item["content"])}
+				if content == nil && role != "assistant" {
+					continue
+				}
+				message := map[string]any{"role": role, "content": responsesContentToChat(content)}
 				if role == "assistant" && len(pendingReasoning) > 0 {
 					message["reasoning_content"] = strings.Join(pendingReasoning, "\n")
 					pendingReasoning = nil

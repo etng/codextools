@@ -150,14 +150,37 @@ func removeString(values []string, target string) []string {
 }
 
 func extractCommonRelayConfig(configContents string) string {
-	common := configContents
-	for _, key := range []string{"model", "model_provider", "base_url", "model_catalog_json", "codex_plus_chat_base_url"} {
-		common = removeRootKey(common, key)
-	}
-	common = removeTomlTablesMatching(common, func(table string) bool {
+	return sanitizeCommonRelayConfig(configContents)
+}
+
+func sanitizeCommonRelayConfig(configContents string) string {
+	common := removeTomlTablesMatching(configContents, func(table string) bool {
 		return strings.HasPrefix(table, "model_providers.")
 	})
-	return normalizeConfigText(common)
+	var kept []string
+	inRoot := true
+	for _, line := range splitLines(common) {
+		trimmed := strings.TrimSpace(line)
+		if isTomlHeader(trimmed) {
+			inRoot = false
+		}
+		if inRoot && isProviderSpecificCommonRootKey(rootLineKey(line)) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return normalizeConfigText(strings.Join(kept, "\n"))
+}
+
+func isProviderSpecificCommonRootKey(key string) bool {
+	key = strings.Trim(strings.TrimSpace(key), `"'`)
+	switch key {
+	case "model", "model_provider", "base_url", "openai_base_url", "chatgpt_base_url", "model_catalog_json", "OPENAI_API_KEY", "codex_plus_chat_base_url":
+		return true
+	}
+	lower := strings.ToLower(key)
+	return lower == "api_key" || lower == "access_token" || lower == "bearer_token" || lower == "experimental_bearer_token" ||
+		strings.HasSuffix(lower, "_api_key") || strings.HasSuffix(lower, "_access_token") || strings.HasSuffix(lower, "_bearer_token")
 }
 
 func stripCommonConfigFromConfig(configContents, commonConfig string) string {

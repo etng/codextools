@@ -576,7 +576,8 @@ func TestRendererInjectionUsesVersionGatedMarketplaceAndAutoExpandStrategy(t *te
 		`schedulePluginAutoExpand`,
 		`threadIdBadge`,
 		`showSaveFilePicker`,
-		`patchReactModelStateNodes`,
+		`modelJsonResponseLooksPatchable`,
+		`window.addEventListener("codex-message-from-view"`,
 	} {
 		if !strings.Contains(rendererInjectScript, required) {
 			t.Fatalf("renderer injection should keep supported plugin controls; missing %q", required)

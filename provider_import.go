@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -20,42 +19,12 @@ func providerImportRequestFromURL(rawURL string) (providerImportRequest, error) 
 		return providerImportRequest{}, err
 	}
 	values := parsed.Query()
-	decodeBlob := func(key string) (string, error) {
-		value := strings.TrimSpace(values.Get(key))
-		if value == "" {
-			return "", nil
-		}
-		data, err := base64.StdEncoding.DecodeString(value)
-		if err != nil {
-			data, err = base64.RawStdEncoding.DecodeString(value)
-		}
-		if err != nil {
-			data, err = base64.URLEncoding.DecodeString(value)
-		}
-		if err != nil {
-			data, err = base64.RawURLEncoding.DecodeString(value)
-		}
-		if err != nil {
-			return "", err
-		}
-		return string(data), nil
-	}
-	configContents, err := decodeBlob("configContents")
-	if err != nil {
-		return providerImportRequest{}, err
-	}
-	authContents, err := decodeBlob("authContents")
-	if err != nil {
-		return providerImportRequest{}, err
-	}
 	request := providerImportRequest{
-		Name:           values.Get("name"),
-		BaseURL:        values.Get("baseUrl"),
-		APIKey:         values.Get("apiKey"),
-		WireAPI:        firstNonEmpty(values.Get("wireApi"), "responses"),
-		RelayMode:      firstNonEmpty(values.Get("relayMode"), "pureApi"),
-		ConfigContents: configContents,
-		AuthContents:   authContents,
+		Name:      values.Get("name"),
+		BaseURL:   values.Get("baseUrl"),
+		APIKey:    values.Get("apiKey"),
+		WireAPI:   firstNonEmpty(values.Get("wireApi"), "responses"),
+		RelayMode: firstNonEmpty(values.Get("relayMode"), "pureApi"),
 	}
 	return normalizeProviderImportRequest(request)
 }
@@ -81,12 +50,10 @@ func normalizeProviderImportRequest(request providerImportRequest) (providerImpo
 	if request.RelayMode == "" {
 		request.RelayMode = "pureApi"
 	}
-	if strings.TrimSpace(request.ConfigContents) == "" {
-		request.ConfigContents = buildCCSConfigToml(request.BaseURL, request.APIKey, providerImportProtocol(request.WireAPI))
-	}
-	if strings.TrimSpace(request.AuthContents) == "" {
-		request.AuthContents = buildCCSAuthJSON(request.APIKey)
-	}
+	// Import links and pending files are untrusted. Build managed snapshots only
+	// from the validated fields above instead of accepting executable TOML/JSON.
+	request.ConfigContents = buildCCSConfigToml(request.BaseURL, request.APIKey, providerImportProtocol(request.WireAPI))
+	request.AuthContents = buildCCSAuthJSON(request.APIKey)
 	return request, nil
 }
 
@@ -95,7 +62,10 @@ func savePendingProviderImport(request providerImportRequest) error {
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(request, "", "  ")
+	pending := request
+	pending.ConfigContents = ""
+	pending.AuthContents = ""
+	data, err := json.MarshalIndent(pending, "", "  ")
 	if err != nil {
 		return err
 	}

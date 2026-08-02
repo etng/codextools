@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/gorilla/websocket"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -499,10 +500,10 @@ func pickCDPPageTarget(targets []cdpTarget) (cdpTarget, error) {
 	var fallback *cdpTarget
 	for i := range targets {
 		target := targets[i]
-		if target.WebSocketDebuggerURL == "" {
+		if target.WebSocketDebuggerURL == "" || isQuickChatCDPPageTarget(target) {
 			continue
 		}
-		if isCodexCDPPageTarget(target) {
+		if isPrimaryCodexCDPPageTarget(target) {
 			return target, nil
 		}
 		if fallback == nil {
@@ -511,7 +512,7 @@ func pickCDPPageTarget(targets []cdpTarget) (cdpTarget, error) {
 	}
 	for i := range targets {
 		target := targets[i]
-		if target.WebSocketDebuggerURL != "" && target.Type == "page" {
+		if target.WebSocketDebuggerURL != "" && target.Type == "page" && !isQuickChatCDPPageTarget(target) {
 			return target, nil
 		}
 	}
@@ -526,6 +527,22 @@ func isCodexCDPPageTarget(target cdpTarget) bool {
 		return false
 	}
 	return strings.HasPrefix(target.URL, "app://-/") || strings.Contains(strings.ToLower(target.Title), "chatgpt")
+}
+
+func isPrimaryCodexCDPPageTarget(target cdpTarget) bool {
+	return isCodexCDPPageTarget(target) && !isQuickChatCDPPageTarget(target)
+}
+
+func isQuickChatCDPPageTarget(target cdpTarget) bool {
+	if target.Type != "page" || target.WebSocketDebuggerURL == "" {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(target.URL))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "app") || parsed.Host != "-" || !strings.EqualFold(parsed.Path, "/index.html") {
+		return false
+	}
+	route := strings.ToLower(strings.TrimSpace(parsed.Query().Get("initialRoute")))
+	return route == "/chatgpt/quick-chat" || route == "/chatgpt/quick-chat-prewarm" || strings.HasPrefix(route, "/chatgpt/quick-chat/")
 }
 
 func (r *launcherRuntime) installBridge(ctx context.Context, websocketURL string, helperPort uint16) error {

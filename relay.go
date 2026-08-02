@@ -878,7 +878,7 @@ func relayConfigWithCommonAndLimits(settings backendSettings, relay relayProfile
 		return normalizeDuplicateTomlTables(profileConfig), nil
 	}
 	commonConfig := joinConfigSectionsRootFirst(
-		settings.RelayCommonConfigContents,
+		sanitizeCommonRelayConfig(settings.RelayCommonConfigContents),
 		filterCommonConfigForSelection(settings.RelayContextConfigContents, relay.ContextSelection),
 	)
 	return joinConfigSectionsRootFirst(profileConfig, commonConfig), nil

@@ -455,10 +455,21 @@ func modelsEndpoint(baseURL string) string {
 	if strings.HasSuffix(cleaned, "/models") {
 		return cleaned
 	}
-	if strings.HasSuffix(cleaned, "/v1") {
+	if hasVersionSuffix(cleaned) {
 		return cleaned + "/models"
 	}
 	return cleaned + "/v1/models"
+}
+
+func hasVersionSuffix(baseURL string) bool {
+	segment := baseURL
+	if index := strings.LastIndex(segment, "/"); index >= 0 {
+		segment = segment[index+1:]
+	}
+	if len(segment) < 2 || segment[0] != 'v' {
+		return false
+	}
+	return segment[1] >= '0' && segment[1] <= '9'
 }
 
 func safeStatusURL(rawURL string) string {

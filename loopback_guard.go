@@ -79,7 +79,14 @@ func acquireResilientLoopbackPortGuardWith(
 	if err == nil {
 		return &loopbackPortGuard{lockFile: lockFile, listener: listener}, nil
 	}
-	if isAddrInUseError(err) && !canConnect(port) {
+	if isAddrInUseError(err) {
+		if canConnect(port) {
+			_ = lockFile.release()
+			return nil, err
+		}
+		return &loopbackPortGuard{lockFile: lockFile, fallbackLockPath: lockFile.path()}, nil
+	}
+	if isPortBindForbiddenError(err) {
 		return &loopbackPortGuard{lockFile: lockFile, fallbackLockPath: lockFile.path()}, nil
 	}
 	_ = lockFile.release()
@@ -115,4 +122,20 @@ func isAddrInUseError(err error) bool {
 	return strings.Contains(message, "address already in use") ||
 		strings.Contains(message, "only one usage of each socket address") ||
 		strings.Contains(message, "addrinuse")
+}
+
+func isPortBindForbiddenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EACCES) {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && errno == syscall.Errno(10013) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "permission denied") ||
+		strings.Contains(message, "forbidden by its access permissions")
 }
