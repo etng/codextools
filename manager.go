@@ -118,7 +118,7 @@ func (s *server) handleCommand(w http.ResponseWriter, r *http.Request) {
 
 func commandTimeout(command string) time.Duration {
 	switch command {
-	case "install_update", "sync_providers_now", "apply_relay_injection", "apply_pure_api_injection", "clear_relay_injection":
+	case "install_update", "sync_providers_now", "apply_session_index_cleanup", "apply_relay_injection", "apply_pure_api_injection", "clear_relay_injection":
 		return 5 * time.Minute
 	}
 	return 45 * time.Second
@@ -206,6 +206,16 @@ func (s *server) dispatch(ctx context.Context, command string, args map[string]a
 		return s.dismissPendingProviderImport()
 	case "sync_providers_now":
 		return s.syncProvidersNow()
+	case "list_local_sessions":
+		return s.listLocalSessions(args)
+	case "delete_local_session":
+		return s.deleteLocalSession(args)
+	case "preview_session_index_cleanup":
+		return s.previewSessionIndexCleanup()
+	case "apply_session_index_cleanup":
+		return s.applySessionIndexCleanup(args)
+	case "test_stepwise_settings":
+		return s.testStepwiseSettings(args)
 	case "repair_conversation_history":
 		return s.repairConversationHistory()
 	case "conversation_history_repair_status":

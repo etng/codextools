@@ -119,6 +119,11 @@ func defaultSettings() backendSettings {
 		CodexAppUpstreamWorktreeCreate:  true,
 		CodexAppNativeMenuPlacement:     true,
 		CodexAppNativeMenuLocalization:  true,
+		CodexAppStepwiseAPIKeyEnv:       defaultStepwiseAPIKeyEnv,
+		CodexAppStepwiseMaxItems:        6,
+		CodexAppStepwiseMaxInputChars:   6000,
+		CodexAppStepwiseMaxOutputTokens: 500,
+		CodexAppStepwiseTimeoutMS:       8000,
 		ZedRemoteOpenStrategy:           "addToFocusedWorkspace",
 		ZedRemoteProjectRegistryEnabled: true,
 		CodexAppImageOverlayOpacity:     35,
@@ -206,6 +211,17 @@ func normalizeSettings(settings backendSettings) backendSettings {
 	}
 	settings.CodexAppImageOverlayPath = strings.TrimSpace(settings.CodexAppImageOverlayPath)
 	settings.CodexAppImageOverlayFitMode = normalizeImageOverlayFitMode(settings.CodexAppImageOverlayFitMode)
+	settings.CodexAppStepwiseBaseURL = strings.TrimRight(strings.TrimSpace(settings.CodexAppStepwiseBaseURL), "/")
+	settings.CodexAppStepwiseAPIKey = strings.TrimSpace(settings.CodexAppStepwiseAPIKey)
+	settings.CodexAppStepwiseAPIKeyEnv = strings.TrimSpace(settings.CodexAppStepwiseAPIKeyEnv)
+	if settings.CodexAppStepwiseAPIKeyEnv == "" {
+		settings.CodexAppStepwiseAPIKeyEnv = defaultStepwiseAPIKeyEnv
+	}
+	settings.CodexAppStepwiseModel = strings.TrimSpace(settings.CodexAppStepwiseModel)
+	settings.CodexAppStepwiseMaxItems = clampInt(settings.CodexAppStepwiseMaxItems, 0, 6)
+	settings.CodexAppStepwiseMaxInputChars = clampInt(settings.CodexAppStepwiseMaxInputChars, 1000, 24000)
+	settings.CodexAppStepwiseMaxOutputTokens = clampInt(settings.CodexAppStepwiseMaxOutputTokens, 100, 4000)
+	settings.CodexAppStepwiseTimeoutMS = clampInt(settings.CodexAppStepwiseTimeoutMS, 1000, 60000)
 	settings.MobileControlRelayURL = strings.TrimSpace(settings.MobileControlRelayURL)
 	settings.MobileControlRoom = strings.TrimSpace(settings.MobileControlRoom)
 	settings.MobileControlKey = strings.TrimSpace(settings.MobileControlKey)
@@ -239,6 +255,10 @@ func normalizeSettings(settings backendSettings) backendSettings {
 		}
 		settings.RelayProfiles[index].ProxyURL = strings.TrimSpace(settings.RelayProfiles[index].ProxyURL)
 		settings.RelayProfiles[index].ModelList, settings.RelayProfiles[index].ModelWindows = normalizeModelListAndWindows(settings.RelayProfiles[index].ModelList, settings.RelayProfiles[index].ModelWindows)
+		settings.RelayProfiles[index].ModelVLM = normalizeModelVLM(settings.RelayProfiles[index].ModelVLM)
+		settings.RelayProfiles[index].VLMAPIKey = strings.TrimSpace(settings.RelayProfiles[index].VLMAPIKey)
+		settings.RelayProfiles[index].VLMModel = strings.TrimSpace(settings.RelayProfiles[index].VLMModel)
+		settings.RelayProfiles[index].VLMBaseURL = strings.TrimRight(strings.TrimSpace(settings.RelayProfiles[index].VLMBaseURL), "/")
 		if !settings.RelayProfiles[index].ContextSelectionInitialized {
 			settings.RelayProfiles[index].ContextSelection = contextSelectionForAllEntries(settings.RelayContextConfigContents)
 			settings.RelayProfiles[index].ContextSelectionInitialized = true
@@ -354,6 +374,16 @@ func normalizeImageOverlayFitMode(value string) string {
 	default:
 		return "fit"
 	}
+}
+
+func clampInt(value, minimum, maximum int) int {
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
 }
 
 func migrateOfficialAuthBinding(settings backendSettings) (backendSettings, bool) {

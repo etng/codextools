@@ -270,6 +270,16 @@ type BackendSettings = {
   codexAppNativeMenuPlacement: boolean;
   codexAppNativeMenuLocalization: boolean;
   codexAppServiceTierControls: boolean;
+  codexAppStepwiseEnabled: boolean;
+  codexAppStepwiseDirectSend: boolean;
+  codexAppStepwiseBaseUrl: string;
+  codexAppStepwiseApiKey: string;
+  codexAppStepwiseApiKeyEnv: string;
+  codexAppStepwiseModel: string;
+  codexAppStepwiseMaxItems: number;
+  codexAppStepwiseMaxInputChars: number;
+  codexAppStepwiseMaxOutputTokens: number;
+  codexAppStepwiseTimeoutMs: number;
   computerUseGuardEnabled: boolean;
   zedRemoteOpenStrategy: ZedOpenStrategy;
   zedRemoteProjectRegistryEnabled: boolean;
@@ -333,6 +343,10 @@ type RelayProfile = {
   modelInsertMode: string;
   modelList: string;
   modelWindows: string;
+  modelVlm: string;
+  vlmApiKey: string;
+  vlmModel: string;
+  vlmBaseUrl: string;
   userAgent: string;
   proxyEnabled: boolean;
   proxyUrl: string;
@@ -563,6 +577,42 @@ type ModeHistorySyncResult = CommandResult<{
   syncMessage: string;
   partial?: boolean;
   rollbackStatus?: string;
+}>;
+
+type LocalSession = {
+  id: string;
+  title: string;
+  cwd: string;
+  modelProvider: string;
+  archived: boolean;
+  updatedAtMs: number;
+  rolloutPath: string;
+  dbPath: string;
+};
+
+type LocalSessionsResult = CommandResult<{
+  dbPath: string;
+  dbPaths: string[];
+  sessions: LocalSession[];
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}>;
+
+type SessionIndexCleanupCandidate = {
+  id: string;
+  threadName: string;
+  updatedAt: string;
+};
+
+type SessionIndexCleanupPreviewResult = CommandResult<{
+  snapshotSha256: string;
+  candidates: SessionIndexCleanupCandidate[];
+}>;
+
+type SessionIndexCleanupApplyResult = CommandResult<{
+  prunedEntries: number;
+  backupDir?: string | null;
 }>;
 
 type RelayProfileTestResult = CommandResult<{
@@ -841,6 +891,16 @@ const defaultSettings: BackendSettings = {
   codexAppNativeMenuPlacement: true,
   codexAppNativeMenuLocalization: true,
   codexAppServiceTierControls: false,
+  codexAppStepwiseEnabled: false,
+  codexAppStepwiseDirectSend: false,
+  codexAppStepwiseBaseUrl: "",
+  codexAppStepwiseApiKey: "",
+  codexAppStepwiseApiKeyEnv: "CODEX_STEPWISE_API_KEY",
+  codexAppStepwiseModel: "",
+  codexAppStepwiseMaxItems: 6,
+  codexAppStepwiseMaxInputChars: 6000,
+  codexAppStepwiseMaxOutputTokens: 500,
+  codexAppStepwiseTimeoutMs: 8000,
   computerUseGuardEnabled: false,
   zedRemoteOpenStrategy: "addToFocusedWorkspace",
   zedRemoteProjectRegistryEnabled: true,
@@ -890,6 +950,10 @@ const defaultSettings: BackendSettings = {
       modelInsertMode: "patch",
       modelList: "",
       modelWindows: "",
+      modelVlm: "",
+      vlmApiKey: "",
+      vlmModel: "",
+      vlmBaseUrl: "",
       userAgent: "",
       proxyEnabled: false,
       proxyUrl: "",
@@ -921,6 +985,8 @@ export function App() {
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
   const [computerUse, setComputerUse] = useState<ComputerUseStatusResult | null>(null);
   const [zedRemoteProjects, setZedRemoteProjects] = useState<ZedRemoteProjectsResult | null>(null);
+  const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
+  const [sessionIndexCleanup, setSessionIndexCleanup] = useState<SessionIndexCleanupPreviewResult | null>(null);
   const [skillMcpBackups, setSkillMcpBackups] = useState<SkillMCPBackupsResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
@@ -1146,6 +1212,61 @@ export function App() {
     }
   };
 
+  const refreshLocalSessions = async (silent = false, offset = 0) => {
+    const result = await run(() =>
+      call<LocalSessionsResult>("list_local_sessions", { request: { offset, limit: 50 } }),
+    );
+    if (result) {
+      if (!result.sessions.length && result.offset > 0) {
+        return refreshLocalSessions(silent, Math.max(0, result.offset - result.limit));
+      }
+      setLocalSessions(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("会话管理", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const deleteLocalSession = async (session: LocalSession) => {
+    const title = session.title || session.id;
+    if (!confirmMessage(`删除会话“${title}”？本地数据库和 rollout 文件会一并删除，并先创建恢复备份。`)) return;
+    const result = await run(() =>
+      call<CommandResult<{ undo_token?: string }>>("delete_local_session", {
+        request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
+      }),
+    );
+    if (result) {
+      showResultNotice("会话删除", result);
+      if (isSuccessStatus(result.status)) await refreshLocalSessions(true, localSessions?.offset ?? 0);
+    }
+  };
+
+  const previewSessionIndexCleanup = async () => {
+    const result = await run(() => call<SessionIndexCleanupPreviewResult>("preview_session_index_cleanup"));
+    if (result) {
+      setSessionIndexCleanup(result);
+      showResultNotice("任务索引检查", result, { silentSuccess: result.candidates.length > 0 });
+    }
+    return result;
+  };
+
+  const applySessionIndexCleanup = async (threadIds: string[]) => {
+    if (!sessionIndexCleanup || !threadIds.length) return;
+    if (!confirmMessage(`清理选中的 ${threadIds.length} 条任务索引？必须先完全退出 ChatGPT 和 Codex，原索引会先完整备份。`)) return;
+    const result = await run(() =>
+      call<SessionIndexCleanupApplyResult>("apply_session_index_cleanup", {
+        snapshotSha256: sessionIndexCleanup.snapshotSha256,
+        threadIds,
+      }),
+    );
+    if (result) {
+      showResultNotice("任务索引清理", result);
+      if (isSuccessStatus(result.status)) {
+        await previewSessionIndexCleanup();
+        await refreshLocalSessions(true, localSessions?.offset ?? 0);
+      }
+    }
+  };
+
   const refreshZedRemoteProjects = async (silent = false) => {
     const result = await run(() => call<ZedRemoteProjectsResult>("zed_remote_projects"));
     if (result) {
@@ -1329,6 +1450,7 @@ export function App() {
       await refreshSettings(true);
       await refreshComputerUse(true);
       await refreshSkillMcpBackups(true);
+      await refreshLocalSessions(true, localSessions?.offset ?? 0);
     }
     if (next === "enhance") {
       await refreshSettings(true);
@@ -1688,6 +1810,10 @@ export function App() {
           : current);
         const backup = result.backupDir ? ` 备份：${result.backupDir}` : "";
         showNotice("同步模式对话历史", `${result.message}${backup}`, result.status);
+        if (isSuccessStatus(result.status)) {
+          await previewSessionIndexCleanup();
+          await refreshLocalSessions(true, localSessions?.offset ?? 0);
+        }
       }
     } finally {
       modeHistorySyncRunningRef.current = false;
@@ -2029,6 +2155,11 @@ export function App() {
     if (result) showNotice("供应商测试", result.message, result.status);
   };
 
+  const testStepwiseSettings = async (settings: BackendSettings) => {
+    const result = await run(() => call<CommandResult<{ items?: Array<{ label?: string; prompt: string }> }>>("test_stepwise_settings", { settings }));
+    if (result) showNotice("Stepwise 测试", result.message, result.status);
+  };
+
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
     if (result) showNotice("模型列表", result.message, result.status);
@@ -2332,6 +2463,10 @@ export function App() {
         }
       },
       syncProvidersNow,
+      refreshLocalSessions,
+      deleteLocalSession,
+      previewSessionIndexCleanup,
+      applySessionIndexCleanup,
       repairConversationHistory,
       cancelConversationHistoryRepair,
       repairCodexPlugins,
@@ -2379,6 +2514,7 @@ export function App() {
       clearCurrentOfficialAuth,
       showNotice,
       testRelayProfile,
+      testStepwiseSettings,
       fetchRelayProfileModels,
       switchRelayProfile,
       switchOfficialMode,
@@ -2404,7 +2540,7 @@ export function App() {
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
       confirm: confirmMessage,
     }),
-    [route, launchForm, settingsForm, settings, pendingProviderImport, removeOwnedData, logs, diagnostics, theme, relayFiles, updateInfo, relay, computerUse, skillMcpBackups, liveContextEntries, zedRemoteProjects, restartInProgress, relaySwitchInProgress, modeHistorySyncInProgress, conversationHistoryRepair],
+    [route, launchForm, settingsForm, settings, pendingProviderImport, removeOwnedData, logs, diagnostics, theme, relayFiles, updateInfo, relay, computerUse, skillMcpBackups, liveContextEntries, zedRemoteProjects, localSessions, sessionIndexCleanup, restartInProgress, relaySwitchInProgress, modeHistorySyncInProgress, conversationHistoryRepair],
   );
 
   return (
@@ -2527,6 +2663,8 @@ export function App() {
               settings={settings}
               relay={relay}
               computerUse={computerUse}
+              localSessions={localSessions}
+              sessionIndexCleanup={sessionIndexCleanup}
               skillMcpBackups={skillMcpBackups}
               lastModeHistorySync={lastModeHistorySync}
               modeHistorySyncInProgress={modeHistorySyncInProgress}
@@ -2638,6 +2776,10 @@ type Actions = {
   clearCodexAppPath: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
+  refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
+  deleteLocalSession: (session: LocalSession) => Promise<void>;
+  previewSessionIndexCleanup: () => Promise<SessionIndexCleanupPreviewResult | null>;
+  applySessionIndexCleanup: (threadIds: string[]) => Promise<void>;
   repairConversationHistory: () => Promise<void>;
   cancelConversationHistoryRepair: () => Promise<void>;
   repairCodexPlugins: () => Promise<void>;
@@ -2690,6 +2832,7 @@ type Actions = {
   clearCurrentOfficialAuth: () => Promise<RelayResult | null>;
   showNotice: (title: string, message: string, status?: Status) => void;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
+  testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   switchRelayProfile: (settings: BackendSettings) => Promise<boolean>;
   switchOfficialMode: () => Promise<void>;
@@ -4071,6 +4214,8 @@ function EnhanceScreen({
             <FeatureToggle title="快速启动参数" detail="限制 Statsig 初始化等待时间；默认关闭，遇到启动卡顿时再开启。" checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
             <FeatureToggle title="会话删除" detail="在会话列表悬停显示删除按钮，并支持撤销。" checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
             <FeatureToggle title="Markdown 导出" detail="导出带时间戳的 Markdown。" checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
+            <FeatureToggle title="Stepwise" detail="在 Codex 页面显示可拖动的后续建议浮层；建议由独立 API 配置生成。" checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseEnabled", value)} />
+            <FeatureToggle title="Stepwise 直接发送" detail="点击建议后自动发送；关闭时只填入输入框。" checked={form.codexAppStepwiseDirectSend} disabled={!masterEnabled || !form.codexAppStepwiseEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseDirectSend", value)} />
             <FeatureToggle title="会话项目移动" detail="把会话移动到普通对话或其他本地项目。" checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
             <FeatureToggle title="会话 ID 标识" detail="在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间。" checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
             <FeatureToggle title="对话居中宽度" detail="把主对话和输入框限制到固定最大宽度。" checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
@@ -4248,6 +4393,8 @@ function ProviderSyncScreen({
   settings,
   relay,
   computerUse,
+  localSessions,
+  sessionIndexCleanup,
   skillMcpBackups,
   lastModeHistorySync,
   modeHistorySyncInProgress,
@@ -4258,6 +4405,8 @@ function ProviderSyncScreen({
   settings: SettingsResult | null;
   relay: RelayResult | null;
   computerUse: ComputerUseStatusResult | null;
+  localSessions: LocalSessionsResult | null;
+  sessionIndexCleanup: SessionIndexCleanupPreviewResult | null;
   skillMcpBackups: SkillMCPBackupsResult | null;
   lastModeHistorySync: ModeHistorySyncResult | null;
   modeHistorySyncInProgress: boolean;
@@ -4270,6 +4419,19 @@ function ProviderSyncScreen({
   const selectedMode = activeRelayProfile(normalizeSettings(form)).relayMode;
   const appliedMode = normalizeRelayMode(relay?.appliedMode ?? relay?.activeMode ?? selectedMode);
   const historyTargetProvider = appliedMode === "official" ? "openai" : "CodexPlusPlus";
+  const [selectedCleanupIds, setSelectedCleanupIds] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setSelectedCleanupIds(new Set());
+  }, [sessionIndexCleanup?.snapshotSha256]);
+  const cleanupCandidates = sessionIndexCleanup?.candidates ?? [];
+  const toggleCleanupCandidate = (id: string, checked: boolean) => {
+    setSelectedCleanupIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
   const guideItems = [
     "自动修复只在 ChatGPT Codex 启动 ChatGPT 前运行，会整理旧对话归属、补回插件配置并重读插件市场。",
     "恢复插件配置会扫描本机已缓存插件，补回 plugins、marketplaces 和 node_repl MCP 配置，并执行 marketplace 刷新/重读。",
@@ -4317,6 +4479,106 @@ function ProviderSyncScreen({
               修复追求目标
             </Button>
           </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title="本地会话与任务索引" detail="跨当前与旧版 SQLite 数据库分页读取，并安全处理失效索引" />
+        <CardContent>
+          <div className="relay-grid compact">
+            <Metric label="当前页" value={localSessions ? `${Math.floor(localSessions.offset / localSessions.limit) + 1}` : "未加载"} />
+            <Metric label="本页会话" value={`${localSessions?.sessions.length ?? 0} 个`} />
+            <Metric label="候选数据库" value={`${localSessions?.dbPaths.length ?? 0} 个`} />
+            <Metric label="后续页面" value={localSessions?.hasMore ? "有" : "无"} />
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.refreshLocalSessions(false, localSessions?.offset ?? 0)} variant="outline">
+              <RefreshCw className="h-4 w-4" />
+              刷新会话
+            </Button>
+            <Button
+              disabled={!localSessions || localSessions.offset <= 0}
+              onClick={() => void actions.refreshLocalSessions(true, Math.max(0, (localSessions?.offset ?? 0) - (localSessions?.limit ?? 50)))}
+              variant="secondary"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              上一页
+            </Button>
+            <Button
+              disabled={!localSessions?.hasMore}
+              onClick={() => void actions.refreshLocalSessions(true, (localSessions?.offset ?? 0) + (localSessions?.limit ?? 50))}
+              variant="secondary"
+            >
+              下一页
+            </Button>
+            <Button onClick={() => void actions.previewSessionIndexCleanup()} variant="outline">
+              <ShieldCheck className="h-4 w-4" />
+              检查任务索引
+            </Button>
+          </Toolbar>
+          <div className="table backup-table">
+            {localSessions?.sessions.length ? (
+              localSessions.sessions.map((session) => (
+                <div className="backup-row" key={session.id}>
+                  <div>
+                    <strong>{session.title || "未命名会话"}</strong>
+                    <span>{session.modelProvider || "本地"} / {session.archived ? "已归档" : "活动"} / {formatTime(session.updatedAtMs)}</span>
+                    <small>{session.cwd || session.id}</small>
+                  </div>
+                  <div className="script-row-actions">
+                    <Button onClick={() => void actions.deleteLocalSession(session)} size="sm" variant="outline">
+                      <Trash2 className="h-4 w-4" />
+                      删除
+                    </Button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="empty">{localSessions ? "当前页没有本地会话。" : "正在读取本地会话。"}</div>
+            )}
+          </div>
+          {sessionIndexCleanup ? (
+            <div className="session-index-cleanup-block">
+              <div className="section-title-row">
+                <div>
+                  <strong>失效任务索引候选</strong>
+                  <small>{cleanupCandidates.length ? `发现 ${cleanupCandidates.length} 条，请逐项核对` : "未发现仅存在于 session_index.jsonl 的记录"}</small>
+                </div>
+                {cleanupCandidates.length ? (
+                  <label className="check-row compact-check-row">
+                    <input
+                      checked={selectedCleanupIds.size === cleanupCandidates.length}
+                      onChange={(event) => setSelectedCleanupIds(event.currentTarget.checked ? new Set(cleanupCandidates.map((item) => item.id)) : new Set())}
+                      type="checkbox"
+                    />
+                    <span>全选</span>
+                  </label>
+                ) : null}
+              </div>
+              <div className="table">
+                {cleanupCandidates.map((candidate) => (
+                  <label className="session-index-cleanup-row" key={candidate.id}>
+                    <input
+                      checked={selectedCleanupIds.has(candidate.id)}
+                      onChange={(event) => toggleCleanupCandidate(candidate.id, event.currentTarget.checked)}
+                      type="checkbox"
+                    />
+                    <span>
+                      <strong>{candidate.threadName || "未命名任务"}</strong>
+                      <small>{candidate.id} / {candidate.updatedAt}</small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {cleanupCandidates.length ? (
+                <Toolbar>
+                  <Button disabled={!selectedCleanupIds.size} onClick={() => void actions.applySessionIndexCleanup(Array.from(selectedCleanupIds))} variant="secondary">
+                    <Trash2 className="h-4 w-4" />
+                    清理已选 {selectedCleanupIds.size} 条
+                  </Button>
+                </Toolbar>
+              ) : null}
+            </div>
+          ) : null}
         </CardContent>
       </Panel>
       {isWindows ? (
@@ -4770,6 +5032,88 @@ function SettingsScreen({
             <Button variant="secondary" onClick={() => void actions.resetSettings()}>
               重置设置
             </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title="Stepwise" detail="基于当前对话生成下一步建议，使用独立的 OpenAI-compatible Chat Completions API" />
+        <CardContent>
+          <div className="form-row">
+            <Field label="Base URL">
+              <Input
+                value={form.codexAppStepwiseBaseUrl}
+                onChange={(event) => onFormChange({ ...form, codexAppStepwiseBaseUrl: event.currentTarget.value })}
+                placeholder="https://api.example.com/v1"
+              />
+            </Field>
+            <Field label="Model">
+              <Input
+                value={form.codexAppStepwiseModel}
+                onChange={(event) => onFormChange({ ...form, codexAppStepwiseModel: event.currentTarget.value })}
+                placeholder="例如 gpt-5-mini"
+              />
+            </Field>
+          </div>
+          <Field label="API Key">
+            <Input
+              type="password"
+              value={form.codexAppStepwiseApiKey}
+              onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKey: event.currentTarget.value })}
+              placeholder="留空时读取环境变量"
+            />
+          </Field>
+          <div className="form-row">
+            <Field label="API Key 环境变量">
+              <Input
+                value={form.codexAppStepwiseApiKeyEnv}
+                onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKeyEnv: event.currentTarget.value })}
+              />
+            </Field>
+            <Field label="最多建议数">
+              <Input
+                max={6}
+                min={0}
+                type="number"
+                value={form.codexAppStepwiseMaxItems}
+                onChange={(event) => onFormChange({ ...form, codexAppStepwiseMaxItems: clampNumber(Number(event.currentTarget.value), 0, 6) })}
+              />
+            </Field>
+          </div>
+          <div className="form-row">
+            <Field label="最大输入字符">
+              <Input
+                max={24000}
+                min={1000}
+                type="number"
+                value={form.codexAppStepwiseMaxInputChars}
+                onChange={(event) => onFormChange({ ...form, codexAppStepwiseMaxInputChars: clampNumber(Number(event.currentTarget.value), 1000, 24000) })}
+              />
+            </Field>
+            <Field label="最大输出 tokens">
+              <Input
+                max={4000}
+                min={100}
+                type="number"
+                value={form.codexAppStepwiseMaxOutputTokens}
+                onChange={(event) => onFormChange({ ...form, codexAppStepwiseMaxOutputTokens: clampNumber(Number(event.currentTarget.value), 100, 4000) })}
+              />
+            </Field>
+            <Field label="超时毫秒">
+              <Input
+                max={60000}
+                min={1000}
+                type="number"
+                value={form.codexAppStepwiseTimeoutMs}
+                onChange={(event) => onFormChange({ ...form, codexAppStepwiseTimeoutMs: clampNumber(Number(event.currentTarget.value), 1000, 60000) })}
+              />
+            </Field>
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.testStepwiseSettings(form)} variant="secondary">
+              <TestTube className="h-4 w-4" />
+              测试连接
+            </Button>
+            <Button onClick={() => void actions.saveSettings()}>保存 Stepwise</Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -6034,6 +6378,9 @@ function RelayProfileEditor({
   const showApiFields = profile.relayMode !== "official" && profile.relayMode !== "aggregate";
   const aggregate = aggregateRelayProfileFor(form, profile);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const imageHandling = parseModelVlmJSON(profile.modelVlm);
+  const profileModels = relayProfileModelNames(profile);
+  const hasVlmMode = Object.values(imageHandling).includes("vlm");
   const updateDraft = (patch: Partial<RelayProfile>) => {
     const shouldRegenerateFiles = [
       "model",
@@ -6245,6 +6592,55 @@ function RelayProfileEditor({
             从上游获取
           </Button>
         </div>
+      ) : null}
+      {showApiFields && profileModels.length ? (
+        <section className="relay-vlm-section" aria-label="模型图片处理">
+          <div className="image-relay-heading">
+            <div>
+              <strong>
+                <Image className="h-4 w-4" />
+                模型图片处理
+              </strong>
+              <span>每个模型独立选择原样发送、移除图片或先由 VLM 分析。</span>
+            </div>
+          </div>
+          <div className="table">
+            {profileModels.map((model) => (
+              <div className="table-row" key={model}>
+                <div>
+                  <strong>{model}</strong>
+                  <small>{imageHandling[model] === "vlm" ? "图片将转换为文字描述" : imageHandling[model] === "strip" ? "图片将替换为省略提示" : "保留原始图片块"}</small>
+                </div>
+                <select
+                  aria-label={`${model} 图片处理方式`}
+                  className="field-select"
+                  value={imageHandling[model] ?? "send-as-is"}
+                  onChange={(event) => updateDraft({ modelVlm: updateModelImageHandling(profile, model, event.currentTarget.value as ImageHandlingMode) })}
+                >
+                  <option value="send-as-is">原样发送</option>
+                  <option value="strip">移除图片</option>
+                  <option value="vlm">VLM 分析</option>
+                </select>
+              </div>
+            ))}
+          </div>
+          {hasVlmMode ? (
+            <div className="relay-fields">
+              <Field label="VLM API Key">
+                <Input type="password" value={profile.vlmApiKey} onChange={(event) => updateDraft({ vlmApiKey: event.currentTarget.value })} placeholder="sk-..." />
+              </Field>
+              <Field label="VLM Model">
+                <Input value={profile.vlmModel} onChange={(event) => updateDraft({ vlmModel: event.currentTarget.value })} placeholder="qwen-vl-plus" />
+              </Field>
+              <Field label="VLM Base URL">
+                <Input value={profile.vlmBaseUrl} onChange={(event) => updateDraft({ vlmBaseUrl: event.currentTarget.value })} placeholder="https://api.example.com/v1" />
+              </Field>
+              {!profile.vlmApiKey.trim() || !profile.vlmModel.trim() || !profile.vlmBaseUrl.trim() ? (
+                <p className="field-hint warn">VLM 配置不完整时将保留原始图片，不会静默丢失图片内容。</p>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
       ) : null}
       <RelayContextSelectionEditor profile={profile} form={form} onChange={(contextSelection) => updateDraft({ contextSelection })} onUseCommonConfigChange={(useCommonConfig) => updateDraft({ useCommonConfig })} />
       <ImageRelaySettings
@@ -6966,6 +7362,49 @@ function pathStateOrDefault(state: PathState | null | undefined): PathState {
   return state ?? { status: "not_checked", path: null };
 }
 
+function clampNumber(value: number, minimum: number, maximum: number): number {
+  if (!Number.isFinite(value)) return minimum;
+  return Math.min(maximum, Math.max(minimum, Math.round(value)));
+}
+
+type ImageHandlingMode = "send-as-is" | "strip" | "vlm";
+
+function normalizeImageHandlingMode(value: unknown): ImageHandlingMode {
+  return value === "strip" || value === "vlm" ? value : "send-as-is";
+}
+
+function parseModelVlmJSON(value: string): Record<string, ImageHandlingMode> {
+  try {
+    const parsed = JSON.parse(value || "{}") as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([model, mode]) => [model.trim(), normalizeImageHandlingMode(mode)] as const)
+        .filter(([model]) => Boolean(model)),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function normalizeModelVlmJSON(value: string): string {
+  const modes = parseModelVlmJSON(value);
+  return Object.keys(modes).length ? JSON.stringify(modes) : "";
+}
+
+function relayProfileModelNames(profile: RelayProfile): string[] {
+  return Array.from(
+    new Set(
+      [profile.model, ...profile.modelList.split(/[\r\n,]+/)]
+        .map((model) => model.trim().replace(/\[[^\]]+\]$/, "").trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function updateModelImageHandling(profile: RelayProfile, model: string, mode: ImageHandlingMode): string {
+  return JSON.stringify({ ...parseModelVlmJSON(profile.modelVlm), [model]: mode });
+}
+
 function normalizeSettings(settings: BackendSettings): BackendSettings {
   const relayCommonConfigContents = normalizeConfigText(settings.relayCommonConfigContents || "");
   const relayContextConfigContents = normalizeConfigText(settings.relayContextConfigContents || "");
@@ -7007,6 +7446,10 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             modelInsertMode: "patch",
             modelList: "",
             modelWindows: "",
+            modelVlm: "",
+            vlmApiKey: "",
+            vlmModel: "",
+            vlmBaseUrl: "",
             userAgent: "",
             proxyEnabled: false,
             proxyUrl: "",
@@ -7028,6 +7471,11 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     ccsLinkEnabled: settings.ccsLinkEnabled === true,
     language: normalizeLanguage(settings.language),
+    codexAppStepwiseApiKeyEnv: settings.codexAppStepwiseApiKeyEnv?.trim() || "CODEX_STEPWISE_API_KEY",
+    codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 6, 0, 6),
+    codexAppStepwiseMaxInputChars: clampNumber(settings.codexAppStepwiseMaxInputChars || 6000, 1000, 24000),
+    codexAppStepwiseMaxOutputTokens: clampNumber(settings.codexAppStepwiseMaxOutputTokens || 500, 100, 4000),
+    codexAppStepwiseTimeoutMs: clampNumber(settings.codexAppStepwiseTimeoutMs || 8000, 1000, 60000),
     relayCommonConfigContents,
     relayContextConfigContents,
     relayProfiles: profiles,
@@ -7108,6 +7556,10 @@ function normalizeRelayProfile(profile: RelayProfile, index = 0, defaultContextS
     modelInsertMode: profile.modelInsertMode || "patch",
     modelList: profile.modelList || "",
     modelWindows: profile.modelWindows || "",
+    modelVlm: normalizeModelVlmJSON(profile.modelVlm || ""),
+    vlmApiKey: profile.vlmApiKey || "",
+    vlmModel: profile.vlmModel || "",
+    vlmBaseUrl: profile.vlmBaseUrl || "",
     userAgent: profile.userAgent || "",
     proxyEnabled: Boolean(profile.proxyEnabled),
     proxyUrl: profile.proxyUrl || "",
@@ -7576,6 +8028,10 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     modelInsertMode: "patch",
     modelList: "",
     modelWindows: "",
+    modelVlm: "",
+    vlmApiKey: "",
+    vlmModel: "",
+    vlmBaseUrl: "",
     userAgent: "",
     proxyEnabled: false,
     proxyUrl: "",

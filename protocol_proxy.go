@@ -16,6 +16,7 @@ type protocolProxyContext struct {
 	OriginalRequest map[string]any
 	Converted       bool
 	Stream          bool
+	Audio           bool
 }
 
 func convertResponsesRequestForProfile(profile relayProfile, path string, body []byte) ([]byte, protocolProxyContext, error) {
@@ -52,6 +53,9 @@ func isResponsesProxyPath(path string) bool {
 }
 
 func protocolProxyTargetURL(profile relayProfile, requestPath string, converted bool) string {
+	if isAudioTranscriptionsProxyPath(requestPath) {
+		return audioTranscriptionsURL(effectiveUpstreamBaseURL(profile))
+	}
 	if converted {
 		return chatCompletionsURL(effectiveUpstreamBaseURL(profile))
 	}
@@ -59,6 +63,34 @@ func protocolProxyTargetURL(profile relayProfile, requestPath string, converted 
 		return modelsEndpoint(effectiveUpstreamBaseURL(profile))
 	}
 	return relayTargetURL(relayProxyBaseURL(effectiveUpstreamBaseURL(profile), profile.Protocol), requestPath)
+}
+
+func isAudioTranscriptionsProxyPath(path string) bool {
+	path = strings.SplitN(path, "?", 2)[0]
+	switch path {
+	case "/audio/transcriptions", "/v1/audio/transcriptions", "/v1/v1/audio/transcriptions", "/codex/v1/audio/transcriptions":
+		return true
+	default:
+		return false
+	}
+}
+
+func audioTranscriptionsURL(baseURL string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/#")
+	if strings.HasSuffix(strings.ToLower(base), "/audio/transcriptions") {
+		return base
+	}
+	originOnly := false
+	if parsed, err := http.NewRequest(http.MethodGet, base, nil); err == nil && parsed.URL != nil {
+		originOnly = parsed.URL.Path == "" || parsed.URL.Path == "/"
+	}
+	if originOnly {
+		base += "/v1"
+	}
+	for strings.Contains(base, "/v1/v1") {
+		base = strings.ReplaceAll(base, "/v1/v1", "/v1")
+	}
+	return base + "/audio/transcriptions"
 }
 
 func isModelsProxyPath(path string) bool {
@@ -596,6 +628,14 @@ func responsesErrorFromUpstream(status int, contentType string, body []byte) map
 
 func writeProtocolProxyResponse(w http.ResponseWriter, resp *http.Response, ctx protocolProxyContext) (int64, error) {
 	contentType := resp.Header.Get("content-type")
+	if ctx.Audio {
+		if contentType != "" {
+			w.Header().Set("content-type", contentType)
+		}
+		w.WriteHeader(resp.StatusCode)
+		flushRelayResponseHeaders(w)
+		return copyRelayResponseBody(w, resp.Body)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
 		if err != nil {

@@ -37,6 +37,16 @@ type backendSettings struct {
 	CodexAppNativeMenuPlacement      bool                    `json:"codexAppNativeMenuPlacement"`
 	CodexAppNativeMenuLocalization   bool                    `json:"codexAppNativeMenuLocalization"`
 	CodexAppServiceTierControls      bool                    `json:"codexAppServiceTierControls"`
+	CodexAppStepwiseEnabled          bool                    `json:"codexAppStepwiseEnabled"`
+	CodexAppStepwiseDirectSend       bool                    `json:"codexAppStepwiseDirectSend"`
+	CodexAppStepwiseBaseURL          string                  `json:"codexAppStepwiseBaseUrl"`
+	CodexAppStepwiseAPIKey           string                  `json:"codexAppStepwiseApiKey"`
+	CodexAppStepwiseAPIKeyEnv        string                  `json:"codexAppStepwiseApiKeyEnv"`
+	CodexAppStepwiseModel            string                  `json:"codexAppStepwiseModel"`
+	CodexAppStepwiseMaxItems         int                     `json:"codexAppStepwiseMaxItems"`
+	CodexAppStepwiseMaxInputChars    int                     `json:"codexAppStepwiseMaxInputChars"`
+	CodexAppStepwiseMaxOutputTokens  int                     `json:"codexAppStepwiseMaxOutputTokens"`
+	CodexAppStepwiseTimeoutMS        int                     `json:"codexAppStepwiseTimeoutMs"`
 	ComputerUseGuardEnabled          bool                    `json:"computerUseGuardEnabled"`
 	ZedRemoteOpenStrategy            string                  `json:"zedRemoteOpenStrategy"`
 	ZedRemoteProjectRegistryEnabled  bool                    `json:"zedRemoteProjectRegistryEnabled"`
@@ -98,6 +108,10 @@ type relayProfile struct {
 	ModelInsertMode               string                `json:"modelInsertMode"`
 	ModelList                     string                `json:"modelList"`
 	ModelWindows                  string                `json:"modelWindows"`
+	ModelVLM                      string                `json:"modelVlm"`
+	VLMAPIKey                     string                `json:"vlmApiKey"`
+	VLMModel                      string                `json:"vlmModel"`
+	VLMBaseURL                    string                `json:"vlmBaseUrl"`
 	UserAgent                     string                `json:"userAgent"`
 	ProxyEnabled                  bool                  `json:"proxyEnabled"`
 	ProxyURL                      string                `json:"proxyUrl"`

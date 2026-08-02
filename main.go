@@ -34,6 +34,7 @@ const (
 	codexOfficialInstallURL  = "https://chatgpt.com/download/"
 	defaultRelayTestModel    = "gpt-5-mini"
 	defaultAPIKeyEnvironment = "CUSTOM_OPENAI_API_KEY"
+	defaultStepwiseAPIKeyEnv = "CODEX_STEPWISE_API_KEY"
 	defaultLanguage          = "zh-CN"
 	defaultGUIPath           = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 	cdpConnectTimeout        = 5 * time.Second
@@ -54,6 +55,12 @@ var embeddedDist embed.FS
 
 //go:embed assets/inject/renderer-inject.js
 var rendererInjectScript string
+
+//go:embed assets/inject/stepwise-inject.js
+var stepwiseInjectScript string
+
+//go:embed assets/gpt56-model-metadata-compat.json
+var gpt56ModelMetadataJSON []byte
 
 type commandResult map[string]any
 

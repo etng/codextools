@@ -114,6 +114,12 @@ func (r *launcherRuntime) handleBridgeRequest(path string, payload json.RawMessa
 		result = upstreamWorktreePrepareValue(payloadMap)
 	case "/upstream-worktree/create":
 		result = upstreamWorktreeCreateValue(payloadMap)
+	case "/stepwise/settings":
+		result = stepwisePublicSettingsValue(loadSettings())
+	case "/stepwise/generate":
+		result = stepwiseGenerateValue(payloadMap, loadSettings())
+	case "/stepwise/test":
+		result = stepwiseTestValue(payloadMap, loadSettings())
 	case "/delete", "/undo", "/archived-thread", "/move-thread-workspace", "/move-thread-projectless", "/export-markdown", "/thread-sort-key", "/thread-sort-keys":
 		result = handleSessionDataRoute(path, payloadMap)
 	default:
@@ -162,6 +168,8 @@ func (r *launcherRuntime) bridgeSettingsValue(settings backendSettings) map[stri
 		"codexAppNativeMenuPlacement":     settings.CodexAppNativeMenuPlacement,
 		"codexAppNativeMenuLocalization":  settings.CodexAppNativeMenuLocalization,
 		"codexAppServiceTierControls":     settings.CodexAppServiceTierControls,
+		"codexAppStepwiseEnabled":         settings.CodexAppStepwiseEnabled,
+		"codexAppStepwiseDirectSend":      settings.CodexAppStepwiseDirectSend,
 		"computerUseGuardEnabled":         settings.ComputerUseGuardEnabled,
 		"zedRemoteOpenStrategy":           settings.ZedRemoteOpenStrategy,
 		"zedRemoteProjectRegistryEnabled": settings.ZedRemoteProjectRegistryEnabled,
@@ -226,6 +234,8 @@ func (r *launcherRuntime) setBridgeSettings(payload map[string]any) map[string]a
 	applyBool("codexAppNativeMenuPlacement", &settings.CodexAppNativeMenuPlacement)
 	applyBool("codexAppNativeMenuLocalization", &settings.CodexAppNativeMenuLocalization)
 	applyBool("codexAppServiceTierControls", &settings.CodexAppServiceTierControls)
+	applyBool("codexAppStepwiseEnabled", &settings.CodexAppStepwiseEnabled)
+	applyBool("codexAppStepwiseDirectSend", &settings.CodexAppStepwiseDirectSend)
 	applyBool("computerUseGuardEnabled", &settings.ComputerUseGuardEnabled)
 	applyBool("zedRemoteProjectRegistryEnabled", &settings.ZedRemoteProjectRegistryEnabled)
 	applyBool("zedRemoteSyncToZedSettings", &settings.ZedRemoteSyncToZedSettings)
@@ -603,7 +613,7 @@ func injectionScript(helperPort uint16, settings backendSettings) string {
 	fastStartupJSON, _ := json.Marshal(map[string]any{"enabled": settings.CodexAppFastStartup, "statsigTimeoutMs": 800})
 	chineseLocaleJSON, _ := json.Marshal(map[string]any{"enabled": settings.CodexAppForceChineseLocale, "locale": "zh-CN"})
 	nativeMenuLocalizationJSON, _ := json.Marshal(map[string]any{"enabled": settings.CodexAppNativeMenuLocalization, "locale": "zh-CN"})
-	return fmt.Sprintf("window.__CODEX_SESSION_DELETE_HELPER__ = %s;\nwindow.__CODEX_PLUS_VERSION__ = %s;\nwindow.__CODEX_PLUS_BUILD__ = %s;\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = %s;\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = %s;\nwindow.__CODEX_PLUS_FAST_STARTUP__ = %s;\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = %s;\nwindow.__CODEX_PLUS_NATIVE_MENU_LOCALIZATION__ = %s;\n%s", helperJSON, versionJSON, buildJSON, imageOverlayJSON, pluginMarketplacesJSON, fastStartupJSON, chineseLocaleJSON, nativeMenuLocalizationJSON, rendererInjectScript)
+	return fmt.Sprintf("window.__CODEX_SESSION_DELETE_HELPER__ = %s;\nwindow.__CODEX_PLUS_VERSION__ = %s;\nwindow.__CODEX_PLUS_BUILD__ = %s;\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = %s;\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = %s;\nwindow.__CODEX_PLUS_FAST_STARTUP__ = %s;\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = %s;\nwindow.__CODEX_PLUS_NATIVE_MENU_LOCALIZATION__ = %s;\n%s\n%s", helperJSON, versionJSON, buildJSON, imageOverlayJSON, pluginMarketplacesJSON, fastStartupJSON, chineseLocaleJSON, nativeMenuLocalizationJSON, rendererInjectScript, stepwiseInjectScript)
 }
 
 func imageOverlayConfig(helperPort uint16, settings backendSettings) map[string]any {

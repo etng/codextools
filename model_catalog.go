@@ -95,6 +95,7 @@ func relayProfileModelCatalogValue(profile relayProfile) map[string]any {
 		"model_provider": strings.TrimSpace(profile.ID),
 		"provider_name":  providerName,
 		"models":         models,
+		"modelMetadata":  modelMetadataForNames(models),
 		"sources": []any{map[string]any{
 			"id":            "relay-profile:" + strings.TrimSpace(profile.ID),
 			"type":          "relay_profile_model_list",
@@ -143,6 +144,7 @@ func relayProfileRemoteModelCatalogValue(ctx context.Context, profile relayProfi
 		"model_provider": strings.TrimSpace(profile.ID),
 		"provider_name":  displayRelayName(profile),
 		"models":         models,
+		"modelMetadata":  modelMetadataForNames(models),
 		"sources":        []any{sourceStatus},
 		"responses_api":  responsesAPIStatus("unknown", "", ""),
 	}
@@ -229,6 +231,7 @@ func codexModelCatalogFromHome(ctx context.Context, home string) map[string]any 
 		"model_provider": modelProvider,
 		"provider_name":  providerName,
 		"models":         models,
+		"modelMetadata":  modelMetadataForNames(models),
 		"sources":        sourceStatuses,
 		"responses_api":  preferredResponsesAPIStatus(sourceStatuses),
 	}

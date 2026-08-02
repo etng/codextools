@@ -876,7 +876,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, conversationTimeline: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, nativeMenuLocalization: true, serviceTierControls: false };
+    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, conversationTimeline: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, nativeMenuLocalization: true, serviceTierControls: false, stepwise: false };
   }
 
   const codexPlusBackendSettingMap = {
@@ -896,6 +896,7 @@
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     nativeMenuLocalization: "codexAppNativeMenuLocalization",
     serviceTierControls: "codexAppServiceTierControls",
+    stepwise: "codexAppStepwiseEnabled",
   };
 
   function backendCodexPlusSettings() {
@@ -929,6 +930,7 @@
         nativeMenuPlacement: false,
         nativeMenuLocalization: false,
         serviceTierControls: false,
+        stepwise: false,
       };
     }
     try {
@@ -951,7 +953,12 @@
   function setCodexPlusSetting(key, value) {
     const backendKey = codexPlusBackendSettingMap[key];
     if (backendKey) {
-      setBackendSetting(backendKey, value);
+      if (key === "stepwise") syncStepwisePanel(value);
+      void setBackendSetting(backendKey, value).then(() => {
+        if (key === "stepwise") {
+          Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel(value));
+        }
+      });
       return;
     }
     let stored = {};
@@ -986,8 +993,20 @@
         refreshCodexServiceTierControls();
       }
     }
+    if (key === "stepwise") syncStepwisePanel(value);
     renderCodexPlusMenu();
     scan();
+  }
+
+  function syncStepwisePanel(enabled = codexPlusSettings().stepwise) {
+    try {
+      window.__codexStepwisePanel?.syncSettings?.({ enabled: !!enabled });
+    } catch (error) {
+      sendCodexPlusDiagnostic("stepwise_sync_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    }
   }
 
   function normalizeConversationViewWidth(value) {
@@ -1994,6 +2013,10 @@
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Markdown 导出</div><div class="codex-plus-row-description">在会话列表显示导出按钮，按本地 rollout 导出带时间戳的 Markdown。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">Stepwise</div><div class="codex-plus-row-description">基于当前对话生成可直接发送的下一步建议。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">会话项目移动</div><div class="codex-plus-row-description">在会话列表悬停显示移动按钮，可移动到普通对话或其他本地项目。</div></div>
@@ -3746,7 +3769,7 @@
     return Array.from(new Set(values.filter((value) => typeof value === "string" && value.trim().length > 0)));
   }
 
-  let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+  let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", provider_name: "", models: [], modelMetadata: {}, sources: [], responses_api: { status: "unknown", message: "" } };
   let codexModelCatalogLoadedAt = 0;
   let codexModelCatalogPromise = null;
   const codexPlusModelListRequestIds = new Set();
@@ -3790,6 +3813,7 @@
   }
 
   function codexPlusModelDescriptor(modelName) {
+    const metadata = codexModelCatalog.modelMetadata?.[modelName] || {};
     return {
       model: modelName,
       id: modelName,
@@ -3801,6 +3825,7 @@
       isDefault: (codexModelCatalog.default_model || codexModelCatalog.model) === modelName,
       defaultReasoningEffort: "medium",
       supportedReasoningEfforts: modelReasoningEfforts(),
+      ...metadata,
     };
   }
 

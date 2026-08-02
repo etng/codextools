@@ -112,8 +112,20 @@ func (r *launcherRuntime) handleHelperHTTP(w http.ResponseWriter, req *http.Requ
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	body, _ := io.ReadAll(io.LimitReader(req.Body, 32*1024*1024))
+	bodyLimit := int64(32 * 1024 * 1024)
+	if isAudioTranscriptionsProxyPath(req.URL.Path) {
+		bodyLimit = 128 * 1024 * 1024
+	}
+	body, readErr := io.ReadAll(io.LimitReader(req.Body, bodyLimit+1))
 	_ = req.Body.Close()
+	if readErr != nil {
+		writeHelperJSON(w, http.StatusBadRequest, map[string]any{"status": "failed", "message": "读取请求体失败：" + readErr.Error()})
+		return
+	}
+	if int64(len(body)) > bodyLimit {
+		writeHelperJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"status": "failed", "message": "请求体超过本地代理限制"})
+		return
+	}
 	appendDiagnosticLog("helper.request", map[string]any{
 		"method":     req.Method,
 		"path":       req.URL.Path,
@@ -145,7 +157,8 @@ func (r *launcherRuntime) handleHelperHTTP(w http.ResponseWriter, req *http.Requ
 		r.writeAppServerStatus(w, req)
 	case "/app-server/rpc", "/app-server/ws":
 		r.proxyAppServerWebSocket(w, req)
-	case "/v1/responses", "/responses", "/v1/responses/compact", "/responses/compact", "/v1/models", "/models":
+	case "/v1/responses", "/responses", "/v1/responses/compact", "/responses/compact", "/v1/models", "/models",
+		"/audio/transcriptions", "/v1/audio/transcriptions", "/v1/v1/audio/transcriptions", "/codex/v1/audio/transcriptions":
 		r.forwardRelayProxy(w, req, body)
 	default:
 		writeHelperJSON(w, http.StatusNotFound, map[string]any{"status": "failed", "message": "未知后端路径"})
@@ -162,6 +175,7 @@ func backendRouteKnown(path string) bool {
 		"/codex-model-catalog", "/codex-config-model",
 		"/zed-remote/status", "/zed-remote/resolve-host", "/zed-remote/fallback-request", "/zed-remote/open", "/zed-remote/projects", "/zed-remote/remember-project", "/zed-remote/forget-project",
 		"/upstream-worktree/status", "/upstream-worktree/defaults", "/upstream-worktree/prepare", "/upstream-worktree/create",
+		"/stepwise/settings", "/stepwise/generate", "/stepwise/test",
 		"/delete", "/undo", "/archived-thread", "/move-thread-workspace", "/move-thread-projectless", "/export-markdown", "/thread-sort-key", "/thread-sort-keys":
 		return true
 	default:
@@ -349,6 +363,17 @@ func forwardRelayProxyAttempt(settings backendSettings, w http.ResponseWriter, r
 		return true
 	}
 	body = proxyBody
+	if isAudioTranscriptionsProxyPath(req.URL.Path) {
+		protocolContext.Audio = true
+	} else {
+		var visionErr error
+		body, visionErr = applyVisionHandling(req.Context(), profile, body)
+		if visionErr != nil {
+			writeHelperJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": visionErr.Error(), "type": "invalid_request_error"}})
+			recordRelayRequestFailure(settings)
+			return true
+		}
+	}
 	baseURL := relayProxyBaseURL(effectiveUpstreamBaseURL(profile), profile.Protocol)
 	apiKey := strings.TrimSpace(profile.APIKey)
 	decision := relayRouteDecision{body: body, route: "text", reason: "default_text"}
@@ -386,7 +411,17 @@ func forwardRelayProxyAttempt(settings backendSettings, w http.ResponseWriter, r
 	upstreamReq.Header.Set("authorization", "Bearer "+apiKey)
 	copyProxyHeaders(req.Header, upstreamReq.Header)
 	setRelayProxyUserAgent(profile.UserAgent, req.Header, upstreamReq.Header)
-	upstreamReq.Header.Set("content-type", "application/json")
+	if protocolContext.Audio {
+		contentType := strings.TrimSpace(req.Header.Get("content-type"))
+		if contentType == "" {
+			writeHelperJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "Audio transcriptions 请求缺少 Content-Type", "type": "invalid_request_error"}})
+			recordRelayRequestFailure(settings)
+			return true
+		}
+		upstreamReq.Header.Set("content-type", contentType)
+	} else {
+		upstreamReq.Header.Set("content-type", "application/json")
+	}
 	if protocolContext.Stream {
 		upstreamReq.Header.Set("accept", "text/event-stream")
 		upstreamReq.Header.Set("cache-control", "no-cache")

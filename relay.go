@@ -916,19 +916,35 @@ func writeRelayModelCatalog(home string, relay relayProfile) error {
 	}
 	items := make([]map[string]any, 0, len(entries))
 	for index, entry := range entries {
-		item := map[string]any{
-			"slug":                             entry.Slug,
-			"display_name":                     entry.DisplayName,
-			"description":                      entry.DisplayName,
+		item := gpt56CatalogEntry(entry.Slug)
+		if item == nil {
+			item = map[string]any{}
+		}
+		item["slug"] = entry.Slug
+		if _, ok := item["display_name"]; !ok {
+			item["display_name"] = entry.DisplayName
+		}
+		if _, ok := item["description"]; !ok {
+			item["description"] = entry.DisplayName
+		}
+		for key, value := range map[string]any{
 			"supported_in_api":                 true,
 			"visibility":                       "list",
 			"priority":                         1000 + index,
 			"effective_context_window_percent": 100,
 			"auto_compact_token_limit":         nil,
+		} {
+			item[key] = value
 		}
 		if entry.Window > 0 {
 			item["context_window"] = entry.Window
 			item["max_context_window"] = entry.Window
+		} else if _, ok := item["context_window"]; !ok {
+			item["context_window"] = uint64(272000)
+			item["max_context_window"] = uint64(272000)
+		}
+		if isGPT56Model(entry.Slug) {
+			item["use_responses_lite"] = relay.Protocol == "chatCompletions"
 		}
 		items = append(items, item)
 	}
