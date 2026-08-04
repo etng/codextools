@@ -214,23 +214,25 @@
 
       <section class="release-note">
         <div data-lang="en" class="active">
-          <strong>Version 1.2.6</strong>
+          <strong>Version 1.2.7</strong>
           <ul>
-            <li>Refines relay routing for image-generation endpoints so image creation and image edit requests follow the intended provider path without being mistaken for text-only model calls.</li>
-            <li>Adds regression coverage for image relay routing to keep OpenAI-compatible image endpoints stable across official, hybrid, and relay modes.</li>
-            <li>Refreshes the README feature overview and promotes the English homepage as the main repository entry point.</li>
-            <li>Moves historical release notes into a dedicated release-notes directory and keeps the current GitHub Release description focused on this patch.</li>
-            <li>Removes duplicated release assets from GitHub Pages so the project page stays lighter while GitHub Releases remain the source for installers.</li>
+            <li>Adds Stepwise integration so the injected Codex UI can generate next-step suggestions from the current conversation.</li>
+            <li>Extends protocol proxy, tool, vision, image, and realtime voice routing so compatible providers can cover more upstream Codex request shapes.</li>
+            <li>Adds official realtime voice availability checks and proxying with clearer fallback reasons when the active account or provider cannot support it.</li>
+            <li>Hardens model metadata patching, GPT-5/GPT-6 compatibility data, and provider configuration handling for newer upstream desktop builds.</li>
+            <li>Improves plugin marketplace compatibility with the bundled curated marketplace archive and safer marketplace unlock behavior.</li>
+            <li>Adds local session, SQLite, session-index cleanup, Stepwise, protocol proxy, realtime, and upstream-compatibility regression coverage.</li>
           </ul>
         </div>
         <div data-lang="zh">
-          <strong>版本 1.2.6</strong>
+          <strong>版本 1.2.7</strong>
           <ul>
-            <li>优化图片生成接口的中转路由，图片创建和图片编辑请求会走正确的 provider 路径，不再被误判为纯文本模型请求。</li>
-            <li>补充图片中转路由回归测试，确保官方、混合 API 和中转模式下的 OpenAI 兼容图片接口保持稳定。</li>
-            <li>刷新 README 功能概览，并将英文首页作为仓库主入口。</li>
-            <li>历史发布说明迁移到独立 release-notes 目录，让当前 GitHub Release 描述聚焦本次补丁。</li>
-            <li>移除 GitHub Pages 中重复托管的 release 大文件，安装包继续以 GitHub Releases 为准，让项目页面更轻。</li>
+            <li>新增 Stepwise 集成，注入到 Codex 界面后可基于当前对话生成下一步建议。</li>
+            <li>扩展 protocol proxy、工具、视觉、图片和 realtime voice 路由，让兼容供应商覆盖更多上游 Codex 请求形态。</li>
+            <li>新增官方 realtime voice 可用性检测和代理转发；当前账号或供应商不支持时会给出更清晰的回退原因。</li>
+            <li>强化模型元数据补丁、GPT-5/GPT-6 兼容数据和供应商配置处理，适配更新的上游桌面构建。</li>
+            <li>改进插件市场兼容性，内置 curated marketplace 归档，并让 marketplace unlock 行为更稳。</li>
+            <li>补充本地会话、SQLite、会话索引清理、Stepwise、protocol proxy、realtime 和上游兼容性的回归测试。</li>
           </ul>
         </div>
       </section>
