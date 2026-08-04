@@ -1047,7 +1047,17 @@
     refreshCodexServiceTierControls();
   }
 
-  let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch", activeRelayMode: "official", activeRelayID: "", codexAppVersion: "" };
+  let codexPlusBackendSettings = {
+    providerSyncEnabled: false,
+    enhancementsEnabled: true,
+    launchMode: "patch",
+    activeRelayMode: "official",
+    activeRelayID: "",
+    codexAppVersion: "",
+    officialRealtimeAvailable: false,
+    officialRealtimeReason: "official_realtime_not_bound",
+    officialRealtimeMessage: "当前供应商未绑定官方账号，请先在管理工具中绑定官方登录。",
+  };
   const codexPluginLegacyEntryUnlockBeforeVersion = "26.601.2237";
   const codexPluginBridgeRequestUnlockFromVersion = "26.616.0";
 
@@ -3688,6 +3698,76 @@
       return { status: "failed", message: "本地 helper 未连接，请重启 ChatGPT Codex" };
     }
     return { status: "failed", message: "本地桥接不可用，请重启 ChatGPT Codex" };
+  }
+
+  const officialRealtimeVoiceIconPathPrefix = "M5.33374 1.91675C5.7478";
+  const officialRealtimeStartLabels = new Set([
+    "start voice chat",
+    "start new voice chat",
+    "开始语音聊天",
+    "开始新的语音聊天",
+    "开始新语音聊天",
+  ]);
+  const officialRealtimeClickBypass = new WeakSet();
+  const officialRealtimeClickPending = new WeakSet();
+
+  function officialRealtimeVoiceButton(target) {
+    const element = target instanceof Element ? target : target?.parentElement;
+    const button = element?.closest?.('button, [role="button"]');
+    if (!button || isExtensionUiNode(button)) return null;
+    const label = String(button.getAttribute("aria-label") || button.getAttribute("title") || "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (officialRealtimeStartLabels.has(label)) return button;
+    const path = button.querySelector?.('svg[viewBox="0 0 16 16"] path');
+    const pathData = String(path?.getAttribute?.("d") || "");
+    if (!pathData.startsWith(officialRealtimeVoiceIconPathPrefix)) return null;
+    return button.closest?.(".composer-footer, form, main") ? button : null;
+  }
+
+  async function continueOfficialRealtimeVoiceClick(button) {
+    const result = await postJson("/realtime/status", {}, { timeoutMs: 5000 });
+    if (result?.status === "ok" && result?.available === true) {
+      codexPlusBackendSettings = {
+        ...codexPlusBackendSettings,
+        officialRealtimeAvailable: true,
+        officialRealtimeReason: result.reason || "available",
+        officialRealtimeMessage: result.message || "官方语音可用",
+      };
+      officialRealtimeClickBypass.add(button);
+      button.click();
+      return;
+    }
+    codexPlusBackendSettings = {
+      ...codexPlusBackendSettings,
+      officialRealtimeAvailable: false,
+      officialRealtimeReason: result?.reason || "official_realtime_upstream_failed",
+      officialRealtimeMessage: result?.message || "官方语音状态检查失败，请重启 ChatGPT Codex 后重试。",
+    };
+    showToast(codexPlusBackendSettings.officialRealtimeMessage, null);
+    sendCodexPlusDiagnostic("official_realtime_click_blocked", {
+      reason: codexPlusBackendSettings.officialRealtimeReason,
+      bridgeStatus: result?.status || "failed",
+    });
+  }
+
+  function installOfficialRealtimeVoiceGate() {
+    document.removeEventListener("click", window.__codexOfficialRealtimeVoiceGateHandler, true);
+    window.__codexOfficialRealtimeVoiceGateHandler = (event) => {
+      const button = officialRealtimeVoiceButton(event.target);
+      if (!button) return;
+      if (officialRealtimeClickBypass.has(button)) {
+        officialRealtimeClickBypass.delete(button);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (officialRealtimeClickPending.has(button)) return;
+      officialRealtimeClickPending.add(button);
+      void continueOfficialRealtimeVoiceClick(button).finally(() => {
+        officialRealtimeClickPending.delete(button);
+      });
+    };
+    document.addEventListener("click", window.__codexOfficialRealtimeVoiceGateHandler, true);
   }
 
   function downloadMarkdown(filename, markdown) {
@@ -7061,6 +7141,7 @@
 
   void loadBackendSettingsForStartup();
   void loadCodexServiceTierState();
+  installOfficialRealtimeVoiceGate();
   scan();
   window.__codexProjectMoveApplyProjection = applyProjectMoveProjection;
   window.__codexProjectMoveReadProjection = readProjectMoveProjection;

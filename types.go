@@ -146,15 +146,17 @@ type launchStatus struct {
 }
 
 type launcherRuntime struct {
-	settingsMu   sync.RWMutex
-	settings     backendSettings
-	debugPort    uint16
-	codexAppPath string
-	helper       *http.Server
-	relay        *http.Server
-	mobileHost   *mobileRelayHostRuntime
-	helperURL    string
-	relayURL     string
+	settingsMu     sync.RWMutex
+	settings       backendSettings
+	realtimeMu     sync.Mutex
+	realtimeDenied officialRealtimeDenial
+	debugPort      uint16
+	codexAppPath   string
+	helper         *http.Server
+	relay          *http.Server
+	mobileHost     *mobileRelayHostRuntime
+	helperURL      string
+	relayURL       string
 }
 
 type cdpTarget struct {

@@ -310,6 +310,9 @@ type BackendSettings = {
   cliWrapperBaseUrl: string;
   cliWrapperApiKey: string;
   cliWrapperApiKeyEnv: string;
+  officialRealtimeAvailable?: boolean;
+  officialRealtimeReason?: string;
+  officialRealtimeMessage?: string;
 };
 
 type LaunchMode = "patch" | "relay";
@@ -533,6 +536,9 @@ type RelayResult = CommandResult<{
   boundOfficialAccountLabel?: string | null;
   boundOfficialProfileId?: string | null;
   boundOfficialProfileName?: string | null;
+  officialRealtimeAvailable?: boolean;
+  officialRealtimeReason?: string;
+  officialRealtimeMessage?: string;
   configPath: string;
   configured: boolean;
   requiresOpenaiAuth: boolean;
@@ -3939,6 +3945,7 @@ function RelayScreen({
           <RelayProfileDetail
             profile={detailProfile}
             form={normalized}
+            relay={relay}
             isNew={isNewProfile}
             onBack={() => {
               setNewProfileDraft(null);
@@ -5492,6 +5499,7 @@ function MarketScriptCard({ script, actions }: { script: ScriptMarketItem; actio
 function RelayProfileDetail({
   profile,
   form,
+  relay,
   isNew = false,
   onBack,
   onFormChange,
@@ -5500,6 +5508,7 @@ function RelayProfileDetail({
 }: {
   profile: RelayProfile;
   form: BackendSettings;
+  relay: RelayResult | null;
   isNew?: boolean;
   onBack: () => void;
   onFormChange: (value: BackendSettings) => void;
@@ -5633,6 +5642,8 @@ function RelayProfileDetail({
       <OfficialAuthBindingPanel
         profile={draft}
         isNew={isNew}
+        isActive={isActive}
+        realtimeStatus={isActive ? relay : null}
         onBind={bindCurrentOfficialAuth}
         onActivate={() => void actions.activateOfficialAuth(profile.id)}
         onClearCurrent={() => void actions.clearCurrentOfficialAuth()}
@@ -6804,6 +6815,8 @@ function ImageRelaySettings({
 function OfficialAuthBindingPanel({
   profile,
   isNew,
+  isActive,
+  realtimeStatus,
   onBind,
   onActivate,
   onClearCurrent,
@@ -6812,6 +6825,8 @@ function OfficialAuthBindingPanel({
 }: {
   profile: RelayProfile;
   isNew: boolean;
+  isActive: boolean;
+  realtimeStatus: RelayResult | null;
   onBind: () => void;
   onActivate: () => void;
   onClearCurrent: () => void;
@@ -6819,6 +6834,10 @@ function OfficialAuthBindingPanel({
   onRefresh: () => void;
 }) {
   const bound = profile.officialAuthContents.trim().length > 0;
+  const realtimeAvailable = isActive && realtimeStatus?.officialRealtimeAvailable === true;
+  const realtimeMessage = !isActive
+    ? "切换为当前供应商后检测官方语音状态。"
+    : realtimeStatus?.officialRealtimeMessage || (bound ? "重启 ChatGPT Codex 后检测官方语音凭据。" : "绑定官方账号后才能使用语音聊天。");
   return (
     <div className="relay-profile-editor official-auth-panel">
       <div className="relay-editor-head">
@@ -6831,10 +6850,11 @@ function OfficialAuthBindingPanel({
       <div className="official-auth-meta">
         <Metric label="绑定账号" value={officialBindingLabel(profile)} />
         <Metric label="更新时间" value={formatOfficialAuthTime(profile.officialAuthUpdatedAt)} />
+        <Metric label="官方语音" value={realtimeAvailable ? "可用" : isActive ? "不可用" : "待检测"} />
       </div>
       <div className="hint-line relay-protocol-hint">
         <ShieldCheck className="h-4 w-4" />
-        <span>可先把某个号保存到供应商，再通过“绑定账号”直接写回当前登录；刷新会重新读取当前登录状态。</span>
+        <span>{realtimeMessage}</span>
       </div>
       <Toolbar>
         <Button disabled={isNew} onClick={onBind} variant="secondary">

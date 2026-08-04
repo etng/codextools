@@ -200,6 +200,7 @@ build_arch() {
   local checksum_path="$DIST/${package_name}.sha256"
   local checksum_tmp_path="$arch_build/${package_name}.sha256.tmp"
   local pkg_resources="$arch_build/pkg-resources"
+  local pkg_scripts="$arch_build/pkg-scripts"
   local distribution_xml="$arch_build/distribution.xml"
 
   rm -rf "$arch_build"
@@ -225,7 +226,7 @@ build_arch() {
   ditto -c -k --norsrc --keepParent "$package_dir" "$zip_path"
 
   rm -rf "$pkg_root"
-  mkdir -p "$pkg_root/Applications" "$pkg_resources"
+  mkdir -p "$pkg_root/Applications" "$pkg_resources" "$pkg_scripts"
   copy_app_bundle "$launcher_app_dir" "$pkg_root/Applications/$LAUNCHER_NAME.app"
   copy_app_bundle "$app_dir" "$pkg_root/Applications/$APP_NAME.app"
   xattr -cr "$pkg_root" 2>/dev/null || true
@@ -234,6 +235,18 @@ build_arch() {
     dot_clean -m "$pkg_root" >/dev/null 2>&1 || true
   fi
   verify_pkg_payload_root "$pkg_root"
+  cat > "$pkg_scripts/preinstall" <<'SCRIPT'
+#!/bin/sh
+set -eu
+
+install_location="${2:-}"
+target_volume="${3:-}"
+if [ "$install_location" != "/" ] || [ "$target_volume" != "/" ]; then
+  echo "ChatGPT Codex Tools must be installed on the system volume at /Applications." >&2
+  exit 1
+fi
+SCRIPT
+  chmod 0755 "$pkg_scripts/preinstall"
   cat > "$pkg_resources/ReadMe.html" <<HTML
 <!doctype html>
 <html>
@@ -264,6 +277,7 @@ HTML
     --identifier "com.hereww.codextools.pkg.${label}" \
     --version "$VERSION" \
     --install-location "/" \
+    --scripts "$pkg_scripts" \
     --component-plist "$component_plist" \
     --filter '/\.DS_Store$' \
     --filter '/\._[^/]*$' \
@@ -276,6 +290,7 @@ HTML
   <title>ChatGPT Codex Tools ${VERSION}</title>
   <readme file="ReadMe.html"/>
   <options customize="never" require-scripts="false"/>
+  <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
   <choices-outline>
     <line choice="default"/>
   </choices-outline>

@@ -70,16 +70,7 @@ func (r *launcherRuntime) shutdownHelper() {
 
 func (r *launcherRuntime) startRelayProxy(port uint16) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-		if req.Method == http.MethodOptions {
-			writeCORSHeaders(w)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		body, _ := io.ReadAll(io.LimitReader(req.Body, 32*1024*1024))
-		_ = req.Body.Close()
-		r.forwardRelayProxy(w, req, body)
-	})
+	mux.HandleFunc("/", r.handleRelayProxyHTTP)
 	server := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", port), Handler: mux}
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
@@ -96,6 +87,37 @@ func (r *launcherRuntime) startRelayProxy(port uint16) error {
 	return nil
 }
 
+func (r *launcherRuntime) handleRelayProxyHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method == http.MethodOptions {
+		writeCORSHeaders(w)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if websocket.IsWebSocketUpgrade(req) {
+		if isRealtimeProxyPath(req.URL.Path) {
+			r.forwardOfficialRealtimeWebSocket(w, req)
+			return
+		}
+		writeHelperJSON(w, http.StatusNotFound, map[string]any{"status": "failed", "message": "未知 WebSocket 路径"})
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(req.Body, 32*1024*1024+1))
+	_ = req.Body.Close()
+	if err != nil {
+		writeHelperJSON(w, http.StatusBadRequest, map[string]any{"status": "failed", "message": "读取请求体失败"})
+		return
+	}
+	if len(body) > 32*1024*1024 {
+		writeHelperJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"status": "failed", "message": "请求体超过本地代理限制"})
+		return
+	}
+	if isRealtimeProxyPath(req.URL.Path) {
+		r.forwardOfficialRealtimeHTTP(w, req, body)
+		return
+	}
+	r.forwardRelayProxy(w, req, body)
+}
+
 func (r *launcherRuntime) shutdownRelayProxy() {
 	if r.relay == nil {
 		return
@@ -106,10 +128,49 @@ func (r *launcherRuntime) shutdownRelayProxy() {
 	appendDiagnosticLog("relay_proxy.shutdown", map[string]any{"address": r.relayURL})
 }
 
+func bridgeRelayWebSockets(client, upstream *websocket.Conn) (int, int) {
+	type result struct {
+		direction string
+		messages  int
+	}
+	done := make(chan result, 2)
+	pipe := func(direction string, dst, src *websocket.Conn) {
+		messages := 0
+		for {
+			messageType, data, err := src.ReadMessage()
+			if err != nil {
+				done <- result{direction: direction, messages: messages}
+				return
+			}
+			if err := dst.WriteMessage(messageType, data); err != nil {
+				done <- result{direction: direction, messages: messages}
+				return
+			}
+			messages++
+		}
+	}
+	go pipe("client", upstream, client)
+	go pipe("upstream", client, upstream)
+	first := <-done
+	_ = client.Close()
+	_ = upstream.Close()
+	second := <-done
+	counts := map[string]int{first.direction: first.messages, second.direction: second.messages}
+	return counts["client"], counts["upstream"]
+}
+
 func (r *launcherRuntime) handleHelperHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method == http.MethodOptions {
 		writeCORSHeaders(w)
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if websocket.IsWebSocketUpgrade(req) {
+		if isRealtimeProxyPath(req.URL.Path) {
+			r.forwardOfficialRealtimeWebSocket(w, req)
+			return
+		}
+		writeHelperJSON(w, http.StatusNotFound, map[string]any{"status": "failed", "message": "未知 WebSocket 路径"})
 		return
 	}
 	bodyLimit := int64(32 * 1024 * 1024)
@@ -140,6 +201,10 @@ func (r *launcherRuntime) handleHelperHTTP(w http.ResponseWriter, req *http.Requ
 		writeHelperJSON(w, http.StatusOK, r.handleHelperBackendRequest(req.URL.Path, payload))
 		return
 	}
+	if isRealtimeProxyPath(req.URL.Path) {
+		r.forwardOfficialRealtimeHTTP(w, req, body)
+		return
+	}
 	switch req.URL.Path {
 	case "/overlay/image":
 		if req.Method != http.MethodGet {
@@ -168,7 +233,7 @@ func (r *launcherRuntime) handleHelperHTTP(w http.ResponseWriter, req *http.Requ
 func backendRouteKnown(path string) bool {
 	switch path {
 	case "/backend/status", "/backend/repair",
-		"/settings/get", "/settings/set",
+		"/settings/get", "/settings/set", "/realtime/status",
 		"/diagnostics/log",
 		"/user-scripts/list", "/user-scripts/set-enabled", "/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/delete",
 		"/devtools/open", "/manager/open",
@@ -396,6 +461,12 @@ func forwardRelayProxyAttempt(settings backendSettings, w http.ResponseWriter, r
 	target := protocolProxyTargetURL(profile, req.URL.Path, protocolContext.Converted)
 	if decision.useImageAPI {
 		target = relayImageTargetURL(baseURL, req.URL.Path)
+	}
+	if req.URL.RawQuery != "" {
+		if parsedTarget, parseErr := url.Parse(target); parseErr == nil {
+			parsedTarget.RawQuery = req.URL.RawQuery
+			target = parsedTarget.String()
+		}
 	}
 	startedAt := time.Now()
 	method := req.Method

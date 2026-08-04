@@ -57,6 +57,7 @@ func relayStatusFromHome(home string, settingsOpt ...backendSettings) map[string
 	if officialAuthSource == "" {
 		officialAuthSource = bound.Source
 	}
+	realtime := applyStoredOfficialRealtimeDenial(officialRealtimeCapabilityForSettings(settings, home, time.Now()))
 	return map[string]any{
 		"activeMode":                 selectedMode,
 		"selectedMode":               selectedMode,
@@ -75,6 +76,9 @@ func relayStatusFromHome(home string, settingsOpt ...backendSettings) map[string
 		"boundOfficialAccountLabel":  nullableString(bound.AccountLabel),
 		"boundOfficialProfileId":     nullableString(bound.ProfileID),
 		"boundOfficialProfileName":   nullableString(bound.ProfileName),
+		"officialRealtimeAvailable":  realtime.Available,
+		"officialRealtimeReason":     realtime.Reason,
+		"officialRealtimeMessage":    realtime.Message,
 		"configPath":                 config.ConfigPath,
 		"configured":                 config.Configured,
 		"requiresOpenaiAuth":         config.RequiresOpenAIAuth,
@@ -875,13 +879,24 @@ func relayConfigWithCommonAndLimits(settings backendSettings, relay relayProfile
 		return "", err
 	}
 	if !relay.UseCommonConfig {
-		return normalizeDuplicateTomlTables(profileConfig), nil
+		return applyOfficialRealtimeConfig(normalizeDuplicateTomlTables(profileConfig), relay), nil
 	}
 	commonConfig := joinConfigSectionsRootFirst(
 		sanitizeCommonRelayConfig(settings.RelayCommonConfigContents),
 		filterCommonConfigForSelection(settings.RelayContextConfigContents, relay.ContextSelection),
 	)
-	return joinConfigSectionsRootFirst(profileConfig, commonConfig), nil
+	return applyOfficialRealtimeConfig(joinConfigSectionsRootFirst(profileConfig, commonConfig), relay), nil
+}
+
+func applyOfficialRealtimeConfig(contents string, relay relayProfile) string {
+	contents = removeRootKey(contents, "experimental_realtime_webrtc_call_base_url")
+	contents = removeRootKey(contents, "experimental_realtime_ws_base_url")
+	if relay.RelayMode == "official" {
+		bom, config := splitTomlBOM(contents)
+		return bom + normalizeConfigText(config)
+	}
+	contents = upsertRootKey(contents, "experimental_realtime_webrtc_call_base_url", quoteToml(officialRealtimeLocalBaseURL))
+	return upsertRootKey(contents, "experimental_realtime_ws_base_url", quoteToml(officialRealtimeLocalBaseURL))
 }
 
 func applyContextLimitsToConfig(configContents, contextWindow, autoCompactLimit string) (string, error) {
@@ -1129,10 +1144,12 @@ func relayDisplayOfficialAuthLabel(relay relayProfile) string {
 }
 
 func officialRelayConfigSnapshot(currentConfig string) string {
-	officialConfig := removeRootKey(
+	officialConfig := removeRootKey(currentConfig, "experimental_realtime_webrtc_call_base_url")
+	officialConfig = removeRootKey(officialConfig, "experimental_realtime_ws_base_url")
+	officialConfig = removeRootKey(
 		removeRootKey(
 			removeTable(
-				removeTable(currentConfig, "model_providers."+relayProvider),
+				removeTable(officialConfig, "model_providers."+relayProvider),
 				"model_providers."+legacyRelayProvider,
 			),
 			"OPENAI_API_KEY",

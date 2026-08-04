@@ -30,6 +30,8 @@ func (r *launcherRuntime) handleBridgeRequest(path string, payload json.RawMessa
 		result = r.bridgeSettingsValue(settings)
 	case "/settings/set":
 		result = r.setBridgeSettings(payloadMap)
+	case "/realtime/status":
+		result = r.officialRealtimeStatusValue()
 	case "/diagnostics/log":
 		r.logRendererDiagnostic(payload)
 		result = map[string]any{"status": "ok", "message": "日志已记录"}
@@ -145,6 +147,7 @@ func mapKeys(value map[string]any) []string {
 
 func (r *launcherRuntime) bridgeSettingsValue(settings backendSettings) map[string]any {
 	active := activeRelayProfile(settings)
+	realtime := r.officialRealtimeCapability(settings)
 	return map[string]any{
 		"providerSyncEnabled":             settings.ProviderSync,
 		"relayProfilesEnabled":            settings.RelayProfilesEnabled,
@@ -185,6 +188,9 @@ func (r *launcherRuntime) bridgeSettingsValue(settings backendSettings) map[stri
 		"mobileControlKey":                settings.MobileControlKey,
 		"mobileControlShareUrl":           mobileRelayShareURL(settings),
 		"codexAppVersion":                 r.codexAppVersion(settings),
+		"officialRealtimeAvailable":       realtime.Available,
+		"officialRealtimeReason":          realtime.Reason,
+		"officialRealtimeMessage":         realtime.Message,
 		"launchMode":                      settings.LaunchMode,
 		"activeRelayMode":                 active.RelayMode,
 		"activeRelayID":                   active.ID,
