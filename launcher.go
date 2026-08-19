@@ -147,20 +147,18 @@ func runLauncher(args []string) error {
 			waitForTCPPortFree(localRelayProxyPort, 5*time.Second)
 		}
 	}
+	if completed, recoveryErr := runPendingRemoteControlRecoveries(codexHomeDir()); recoveryErr != nil {
+		appendDiagnosticLog("remote_control.pending_recovery_failed", map[string]any{"error": recoveryErr.Error()})
+	} else if completed > 0 {
+		appendDiagnosticLog("remote_control.pending_recovery_complete", map[string]any{"completed": completed})
+	}
 	if settings.ProviderSync {
 		result := runProviderSyncWithHeldLauncherGuard(codexHomeDir())
-		repairResult := repairCodexConfig(codexHomeDir(), codexConfigRepairOptions{Plugins: true})
 		appendDiagnosticLog("provider_sync."+result.Status, map[string]any{
 			"targetProvider":      result.TargetProvider,
 			"changedSessionFiles": result.ChangedSessionFiles,
 			"sqliteRowsUpdated":   result.SQLiteRowsUpdated,
 			"message":             result.Message,
-		})
-		appendDiagnosticLog("codex_plugin_repair."+repairResult.Status, map[string]any{
-			"pluginCount":      repairResult.PluginCount,
-			"marketplaceCount": repairResult.MarketplaceCount,
-			"changed":          repairResult.PluginConfigChanged,
-			"message":          repairResult.Message,
 		})
 	}
 	if settings.CodexAppPluginMarketplaceUnlock {
@@ -889,9 +887,9 @@ func codexLaunchEnvironment(settingsValues ...backendSettings) []string {
 	case "darwin":
 		environment = append(environment, "PATH="+defaultGUIPath)
 	}
-	if len(settingsValues) > 0 {
-		environment = append(environment, imageRelayCLIEnvironment(settingsValues[0])...)
-	}
+	// Keep the desktop app on its native ChatGPT transport. Image relay
+	// variables are only valid for a dedicated CLI process; inheriting them
+	// here also affects native modules such as remote-control enrollment.
 	return environment
 }
 

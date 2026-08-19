@@ -1,4 +1,9 @@
 (() => {
+  // The launcher injects into the main Codex surface. Keep this guard in the
+  // renderer too so embedded browsers and auth views never receive our UI.
+  const codexPlusIsNodeTestHarness = typeof process === "object" && !!process.versions?.node;
+  if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
+
   function installCodexPlusFastStartup() {
     const config = window.__CODEX_PLUS_FAST_STARTUP__;
     if (!config || config.enabled !== true) return;
@@ -190,9 +195,66 @@
     window.__codexPlusNativeMenuLocalizationLocale = config.locale || "zh-CN";
   }
 
+  function installCodexPlusDreamSkin() {
+    const runtime = window.__CODEX_PLUS_DREAM_SKIN__ || {};
+    const backend = window.__codexPlusDreamSkinSettings || {};
+    const enabled = backend.enabled ?? runtime.enabled;
+    const paused = backend.paused ?? runtime.paused;
+    const root = document.documentElement;
+    const styleId = "codex-plus-dream-skin-style";
+    const existing = document.getElementById(styleId);
+    if (!enabled || paused || !root) {
+      existing?.remove();
+      root?.removeAttribute("data-codex-plus-dream-skin");
+      ["background", "panel", "panel-alt", "accent", "accent-alt", "secondary", "highlight", "text", "muted", "line", "art"]
+        .forEach((name) => root?.style.removeProperty(`--codex-dream-${name}`));
+      return;
+    }
+    const config = { ...(runtime.config || {}), ...(backend.config || {}) };
+    const colors = { ...(runtime.config?.colors || {}), ...(backend.config?.colors || {}) };
+    const colorValues = {
+      background: colors.background || "#F7F4F5",
+      panel: colors.panel || "#FFFFFF",
+      "panel-alt": colors.panelAlt || "#FFF7F8",
+      accent: colors.accent || "#E25563",
+      "accent-alt": colors.accentAlt || "#F07A86",
+      secondary: colors.secondary || "#F3A8AF",
+      highlight: colors.highlight || "#C93D4C",
+      text: colors.text || "#2B2224",
+      muted: colors.muted || "#8A7A7D",
+      line: colors.line || "rgba(196, 120, 128, .22)",
+    };
+    Object.entries(colorValues).forEach(([name, value]) => root.style.setProperty(`--codex-dream-${name}`, String(value)));
+    const art = runtime.imageData || "";
+    root.style.setProperty("--codex-dream-art", art ? `url("${art.replace(/"/g, "%22")}")` : "none");
+    root.dataset.codexPlusDreamSkin = String(config.id || runtime.theme || "custom");
+    const style = existing || document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      html[data-codex-plus-dream-skin] { color-scheme: light; }
+      html[data-codex-plus-dream-skin] body,
+      html[data-codex-plus-dream-skin] #root { background: var(--codex-dream-background) !important; color: var(--codex-dream-text) !important; }
+      html[data-codex-plus-dream-skin] body::before {
+        content: ""; position: fixed; inset: 0 0 0 auto; width: min(44vw, 680px); z-index: 0;
+        background-image: var(--codex-dream-art); background-position: center; background-size: cover; background-repeat: no-repeat;
+        opacity: .2; pointer-events: none; mask-image: linear-gradient(to left, #000 42%, transparent 100%);
+      }
+      html[data-codex-plus-dream-skin] aside.app-shell-left-panel,
+      html[data-codex-plus-dream-skin] [class*="ApplicationMenuTopBar"],
+      html[data-codex-plus-dream-skin] .app-header-tint { background: color-mix(in srgb, var(--codex-dream-panel) 92%, transparent) !important; border-color: var(--codex-dream-line) !important; }
+      html[data-codex-plus-dream-skin] main { position: relative; z-index: 1; }
+      html[data-codex-plus-dream-skin] button[data-state="active"],
+      html[data-codex-plus-dream-skin] [aria-selected="true"] { color: var(--codex-dream-highlight) !important; }
+      html[data-codex-plus-dream-skin] textarea:focus,
+      html[data-codex-plus-dream-skin] [contenteditable="true"]:focus { outline-color: var(--codex-dream-accent) !important; }
+    `;
+    if (!existing) (document.head || root).appendChild(style);
+  }
+
   installCodexPlusFastStartup();
   installCodexPlusForceChineseLocale();
   installCodexPlusNativeMenuLocalization();
+  installCodexPlusDreamSkin();
 
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";
   const buttonClass = "codex-delete-button";
@@ -238,7 +300,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "11";
+  const codexDeleteStyleVersion = "12";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
@@ -261,8 +323,10 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "2";
-  const codexPluginMarketplaceUnlockVersion = "12";
+  const codexServiceTierRequestOverrideVersion = "9";
+  const codexAppServerModelRequestPatchVersion = "5";
+  const codexRemoteSessionRecoveryVersion = "4";
+  const codexPluginMarketplaceUnlockVersion = "15";
   const codexPluginAutoExpandVersion = "1";
   const codexPluginAutoExpandMaxClicks = 80;
   const codexPluginAutoExpandClickDelayMs = 90;
@@ -304,7 +368,7 @@
   const selectors = {
     sidebarThread: "[data-app-action-sidebar-thread-id]",
     threadTitle: "[data-thread-title]",
-    appHeader: ".app-header-tint",
+    appHeader: '[class*="ApplicationMenuTopBar"], .app-header-tint',
     nativeMenuBar: "[class*=\"ms-auto\"][class*=\"flex\"][class*=\"items-center\"]",
     headerContextMenuSurface: '[data-testid="app-shell-header-context-menu-surface"]',
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
@@ -332,6 +396,9 @@
         align-items: center;
         gap: 6px;
         background: transparent;
+      }
+      [data-codex-plus-usage-alert-hidden="true"] {
+        display: none !important;
       }
       .${actionButtonClass} {
         width: 26px;
@@ -714,6 +781,7 @@
       .codex-plus-service-tier-status { color: #a1a1aa; font-size: 12px; line-height: 1.3; text-align: right; }
       .codex-plus-service-tier-status[data-status="ok"] { color: #34d399; }
       .codex-plus-service-tier-status[data-status="failed"] { color: #f87171; }
+      .codex-plus-service-tier-status[data-status="unsupported"] { color: #fbbf24; }
       .codex-plus-service-tier-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
       .codex-plus-service-tier-thread-actions { opacity: .88; align-items: center; }
       .codex-plus-service-tier-thread-label { color: #a1a1aa; font: 12px/1.2 system-ui, sans-serif; white-space: nowrap; }
@@ -741,6 +809,7 @@
       .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: rgba(16,163,127,.55); background: rgba(16,163,127,.18); color: #6ee7b7; }
       .${codexServiceTierBadgeClass}[data-tier="loading"] { color: #a1a1aa; }
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: rgba(248,113,113,.42); background: rgba(248,113,113,.12); color: #fca5a5; }
+      .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
       .${threadIdBadgeClass} {
         flex: 0 0 auto;
@@ -876,18 +945,16 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, conversationTimeline: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, nativeMenuLocalization: true, serviceTierControls: false, stepwise: false };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, nativeMenuLocalization: true, serviceTierControls: false, stepwise: false };
   }
 
   const codexPlusBackendSettingMap = {
     pluginMarketplaceUnlock: "codexAppPluginMarketplaceUnlock",
-    pluginAutoExpand: "codexAppPluginAutoExpand",
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     sessionDelete: "codexAppSessionDelete",
     markdownExport: "codexAppMarkdownExport",
     pasteFix: "codexAppPasteFix",
     projectMove: "codexAppProjectMove",
-    conversationTimeline: "codexAppConversationTimeline",
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     threadScrollRestore: "codexAppThreadScrollRestore",
@@ -935,6 +1002,8 @@
     }
     try {
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
+      settings.pluginAutoExpand = false;
+      settings.conversationTimeline = false;
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
         settings.pluginAutoExpand = false;
@@ -942,6 +1011,8 @@
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
+      settings.pluginAutoExpand = false;
+      settings.conversationTimeline = false;
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
         settings.pluginAutoExpand = false;
@@ -1118,6 +1189,8 @@
   let codexServiceTierState = {
     status: "loading",
     serviceTier: null,
+    configServiceTier: null,
+    serviceTierSource: null,
     message: "正在读取…",
     fastTierValue: "priority",
     controlMode: "inherit",
@@ -1126,21 +1199,33 @@
     threadMode: "inherit",
     effectiveServiceTier: null,
     effectiveMode: "standard",
+    fastModelName: "",
+    fastSupported: false,
   };
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
+  const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
   const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
   const codexServiceTierDispatcherPatchRetryDelaysMs = [500, 1500, 3000, 6000, 12000];
+  ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].forEach((model) => codexServiceTierSupportedFastModels.add(model));
 
-  function codexAppAssetUrl(namePart) {
-    const urls = [
+  function uniqueCodexAppAssetUrls(urls) {
+    return Array.from(new Set((urls || []).filter((url) => typeof url === "string" && url.includes("/assets/") && url.split("?")[0].endsWith(".js"))));
+  }
+
+  function codexAppAssetCandidateUrls() {
+    return uniqueCodexAppAssetUrls([
       ...Array.from(document.scripts || []).map((script) => script.src),
       ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
       ...performance.getEntriesByType("resource").map((entry) => entry.name),
-    ].filter(Boolean);
-    return urls.find((url) => url.includes("/assets/") && url.includes(namePart) && url.split("?")[0].endsWith(".js")) || "";
+    ]);
+  }
+
+  function codexAppAssetUrl(namePart) {
+    if (!namePart) return "";
+    return codexAppAssetCandidateUrls().find((url) => url.includes(namePart)) || "";
   }
 
   async function loadCodexAppModule(namePart) {
@@ -1157,15 +1242,107 @@
     return await codexServiceTierModulePromises.get(namePart);
   }
 
+  async function loadOptionalCodexAppModule(namePart) {
+    try {
+      return await loadCodexAppModule(namePart);
+    } catch (error) {
+      if (String(error?.message || error).includes(`未找到 Codex App asset: ${namePart}`)) return null;
+      throw error;
+    }
+  }
+
+  function appServerFallbackAssetUrls() {
+    const preferred = codexAppAssetCandidateUrls().filter((url) => {
+      const name = (url.split("/").pop() || "").toLowerCase();
+      return /use-host-config|app-server-manager-signals|app-initial|app-main|page-|chatg|signals|server-manager/.test(name);
+    });
+    preferred.sort((left, right) => {
+      const score = (url) => {
+        const name = (url.split("/").pop() || "").toLowerCase();
+        if (name.includes("use-host-config")) return 0;
+        if (name.includes("app-server-manager-signals")) return 1;
+        if (name.includes("app-initial") && name.includes("app-main")) return 2;
+        if (name.includes("app-main")) return 3;
+        return 4;
+      };
+      return score(left) - score(right) || right.length - left.length;
+    });
+    return preferred.slice(0, 16);
+  }
+
+  function collectAppServerRequestCandidatesFromModule(module) {
+    const candidates = [];
+    const seen = new Set();
+    const push = (value) => {
+      if (!value || typeof value !== "object" || seen.has(value)) return;
+      seen.add(value);
+      candidates.push(value);
+    };
+    for (const value of Object.values(module || {})) {
+      push(value);
+      if (!value || typeof value !== "object") continue;
+      if (typeof value.get === "function") {
+        try { push(value.get()); } catch {}
+        try { push(value.get("local")); } catch {}
+      }
+      try {
+        for (const nested of Object.values(value).slice(0, 100)) push(nested);
+      } catch {}
+    }
+    return candidates;
+  }
+
+  async function loadAppServerRequestCandidates() {
+    const modules = [];
+    const sources = [];
+    const seenModules = new Set();
+    const seenUrls = new Set();
+    const pushModule = (module, source) => {
+      if (!module || typeof module !== "object" || seenModules.has(module)) return;
+      seenModules.add(module);
+      modules.push(module);
+      sources.push(source);
+    };
+    for (const assetPrefix of ["use-host-config-", "app-server-manager-signals-"]) {
+      try {
+        const module = await loadOptionalCodexAppModule(assetPrefix);
+        if (module) pushModule(module, assetPrefix);
+      } catch {}
+    }
+    for (const url of appServerFallbackAssetUrls()) {
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      try { pushModule(await import(url), url); } catch {}
+    }
+    const candidates = [];
+    const seenCandidates = new Set();
+    for (const module of modules) {
+      for (const candidate of collectAppServerRequestCandidatesFromModule(module)) {
+        if (seenCandidates.has(candidate)) continue;
+        seenCandidates.add(candidate);
+        candidates.push(candidate);
+      }
+    }
+    return { modules, candidates, sources, discovery: sources.some((source) => !source.endsWith("-")) ? "fallback" : "named-assets" };
+  }
+
   async function codexAppAssetUrlFromScriptText(namePart) {
-    const scripts = Array.from(document.scripts || []).map((script) => script.src).filter(Boolean);
+    if (!namePart) return "";
+    const scripts = codexAppAssetCandidateUrls();
+    const escaped = String(namePart).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const patterns = [
+      new RegExp(`["'](\\./(?:assets/)?${escaped}[^"']+\\.js)["']`),
+      new RegExp(`["'](\\.?/assets/${escaped}[^"']+\\.js)["']`),
+      new RegExp(`["']([^"']*/assets/${escaped}[^"']+\\.js)["']`),
+    ];
     for (const src of scripts) {
-      if (!src.includes("/assets/") || !src.split("?")[0].endsWith(".js")) continue;
       try {
         const text = await fetch(src).then((response) => response.ok ? response.text() : "");
-        const escaped = namePart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const match = text.match(new RegExp(`["'](\\./assets/${escaped}[^"']+\\.js)["']`));
-        if (match) return new URL(match[1], src).href;
+        if (!text) continue;
+        for (const pattern of patterns) {
+          const match = text.match(pattern);
+          if (match) return new URL(match[1], src).href;
+        }
       } catch {
       }
     }
@@ -1174,11 +1351,15 @@
 
   function codexDispatcherFromModule(module) {
     if (!module || typeof module !== "object") return null;
+    if (module.idt && typeof module.idt.dispatchMessage === "function") return module.idt;
+    for (const value of Object.values(module)) {
+      if (value && typeof value === "object" && typeof value.dispatchMessage === "function") return value;
+    }
     for (const value of Object.values(module)) {
       if (typeof value !== "function") continue;
       let dispatcher = null;
       try {
-        dispatcher = value.getInstance?.();
+        dispatcher = typeof value.getInstance === "function" ? value.getInstance() : null;
       } catch (_) {
         dispatcher = null;
       }
@@ -1188,16 +1369,53 @@
   }
 
   async function codexServiceTierDispatcher() {
-    const module = await loadCodexAppModule("setting-storage-");
-    return codexDispatcherFromModule(module);
+    const errors = [];
+    for (const assetPrefix of ["setting-storage-", "vscode-api-", "app-initial-"]) {
+      try {
+        const dispatcher = codexDispatcherFromModule(await loadCodexAppModule(assetPrefix));
+        if (dispatcher) return dispatcher;
+        errors.push(`${assetPrefix}: dispatcher export unavailable`);
+      } catch (error) {
+        errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+      }
+    }
+    throw new Error(`Codex dispatcher unavailable (${errors.join("; ")})`);
   }
 
   async function codexSettingStorageModule() {
-    const module = await loadCodexAppModule("setting-storage-");
-    if (typeof module.n !== "function" || typeof module.s !== "function") {
-      throw new Error("Codex setting-storage 接口不可用");
+    const errors = [];
+    for (const assetPrefix of ["setting-storage-", "app-initial-"]) {
+      try {
+        const module = await loadCodexAppModule(assetPrefix);
+        const values = module && typeof module === "object" ? Object.values(module) : [];
+        const byCapability = (action) => values.find((candidate) => {
+          if (typeof candidate !== "function") return false;
+          try {
+            const source = String(candidate);
+            return source.includes(`${action}-setting`) && source.includes("params") && source.includes("key");
+          } catch (_) {
+            return false;
+          }
+        });
+        const getSetting = assetPrefix === "setting-storage-" && typeof module?.n === "function"
+          ? module.n
+          : assetPrefix === "app-initial-" && typeof module?.jut === "function"
+            ? module.jut
+            : byCapability("get");
+        const setSetting = assetPrefix === "setting-storage-" && typeof module?.s === "function"
+          ? module.s
+          : assetPrefix === "app-initial-" && typeof module?.Put === "function"
+            ? module.Put
+            : byCapability("set");
+        if (typeof getSetting === "function" && typeof setSetting === "function") {
+          return { n: getSetting, s: setSetting, assetPrefix };
+        }
+        errors.push(`${assetPrefix}: setting exports unavailable`);
+      } catch (error) {
+        errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+      }
     }
-    return module;
+    throw new Error(`Codex setting-storage 接口不可用 (${errors.join("; ")})`);
   }
 
   async function getCodexServiceTierSetting() {
@@ -1222,10 +1440,67 @@
     return codexServiceTierState.fastTierValue || codexServiceTierFallbackFastValue;
   }
 
+  function codexServiceTierFastModelListLabel() {
+    return Array.from(codexServiceTierSupportedFastModels).join(" / ");
+  }
+
+  function normalizeCodexServiceTierModelName(model) {
+    return String(model || "").trim().toLowerCase();
+  }
+
+  function codexServiceTierModelFromValue(value, visited = new WeakSet(), depth = 0) {
+    if (typeof value === "string") return value.trim();
+    if (!value || typeof value !== "object" || visited.has(value) || depth > 3) return "";
+    visited.add(value);
+    for (const key of ["model", "modelId", "model_id", "selectedModel", "selected_model", "defaultModel", "default_model"]) {
+      const model = codexServiceTierModelFromValue(value[key], visited, depth + 1);
+      if (model) return model;
+    }
+    for (const key of ["params", "request", "payload", "body", "config", "options"]) {
+      const model = codexServiceTierModelFromValue(value[key], visited, depth + 1);
+      if (model) return model;
+    }
+    return "";
+  }
+
+  function codexServiceTierCurrentModelName() {
+    return codexServiceTierModelFromValue(codexModelCatalog.model) || codexServiceTierModelFromValue(codexModelCatalog.default_model);
+  }
+
+  function codexServiceTierModelForRequest(params, modelHint = "") {
+    return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
+  }
+
+  function codexServiceTierFastSupportedForModel(modelName) {
+    return codexServiceTierSupportedFastModels.has(normalizeCodexServiceTierModelName(modelName));
+  }
+
+  function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
+    const modelText = modelName ? `当前模型 ${modelName} 不支持` : "当前模型未读取";
+    return `Fast 仅支持 ${codexServiceTierFastModelListLabel()}，${modelText}`;
+  }
+
+  function codexServiceTierMaybeLoadModelCatalog(force = false) {
+    if (codexModelCatalogPromise) return;
+    if (!force && codexModelCatalog.status === "failed") return;
+    if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return;
+    loadCodexModelCatalog(force).then(refreshCodexServiceTierControls).catch(refreshCodexServiceTierControls);
+  }
+
+  function codexServiceTierFastAvailability(modelName = codexServiceTierCurrentModelName()) {
+    const normalizedModel = normalizeCodexServiceTierModelName(modelName);
+    return { modelName: modelName || "", supported: !!normalizedModel && codexServiceTierSupportedFastModels.has(normalizedModel) };
+  }
+
+  function codexServiceTierInheritedValue() {
+    if (codexServiceTierState.serviceTier != null) return codexServiceTierState.serviceTier;
+    return codexServiceTierState.configServiceTier ?? null;
+  }
+
   function codexServiceTierValueForMode(mode) {
     if (mode === "fast") return codexFastServiceTierValue();
     if (mode === "standard") return null;
-    return codexServiceTierState.serviceTier || null;
+    return codexServiceTierInheritedValue();
   }
 
   function codexServiceTierDefaultModeForControlMode(controlMode, fallback = "inherit") {
@@ -1251,7 +1526,7 @@
     if (controlMode === "global-fast") return codexFastServiceTierValue();
     if (controlMode === "global-standard") return null;
     if (controlMode === "custom") return codexServiceTierValueForMode(codexServiceTierEffectiveThreadMode(threadMode, defaultMode));
-    return codexServiceTierState.serviceTier || null;
+    return codexServiceTierInheritedValue();
   }
 
   function codexServiceTierEffectiveMode(value) {
@@ -1274,15 +1549,24 @@
     return `当前：${serviceTier}`;
   }
 
+  function serviceTierInheritSourceLabel(serviceTierSource) {
+    return serviceTierSource === "config-toml" ? "继承 config.toml" : "继承 Codex 默认设置";
+  }
+
   function serviceTierStatusMessage(
     controlMode = codexServiceTierState.controlMode || "inherit",
     threadMode = codexServiceTierState.threadMode || "inherit",
     effectiveMode = codexServiceTierState.effectiveMode || "standard",
-    defaultMode = codexServiceTierState.defaultMode || "inherit"
+    defaultMode = codexServiceTierState.defaultMode || "inherit",
+    effectiveServiceTier = codexServiceTierState.effectiveServiceTier,
+    serviceTierSource = codexServiceTierState.serviceTierSource
   ) {
     if (codexServiceTierState.status === "loading") return "正在读取…";
     if (codexServiceTierState.status === "failed") return "读取失败";
-    if (controlMode === "inherit") return `继承 config.toml：${effectiveMode}`;
+    if (controlMode === "inherit") {
+      if (effectiveServiceTier == null) return "继承 Codex 默认设置：默认";
+      return `${serviceTierInheritSourceLabel(serviceTierSource)}：${effectiveMode}`;
+    }
     if (controlMode === "global-standard") return "全局 Standard";
     if (controlMode === "global-fast") return "全局 Fast";
     if (threadMode === "inherit") return `自定义：默认 ${defaultMode}`;
@@ -1409,6 +1693,15 @@
       return;
     }
     const normalizedMode = normalizeCodexServiceTierControlMode(mode);
+    if (normalizedMode === "global-fast") {
+      const fastAvailability = codexServiceTierFastAvailability();
+      if (!fastAvailability.supported) {
+        codexServiceTierMaybeLoadModelCatalog(true);
+        showToast(codexServiceTierFastUnsupportedMessage(fastAvailability.modelName), null);
+        refreshCodexServiceTierControls();
+        return;
+      }
+    }
     const state = readThreadServiceTierState();
     state.mode = normalizedMode;
     if (normalizedMode !== "custom") {
@@ -1421,7 +1714,7 @@
     writeThreadServiceTierState(state);
     refreshCodexServiceTierControls();
     const labels = {
-      inherit: "继承 config.toml",
+      inherit: "继承 Codex 默认设置",
       "global-standard": "全局 Standard",
       "global-fast": "全局 Fast",
       custom: "自定义",
@@ -1439,6 +1732,10 @@
     const threadMode = normalizeCodexThreadServiceTierMode(override?.mode);
     const effectiveServiceTier = codexServiceTierValueForControlMode(controlMode, threadMode, defaultMode);
     const effectiveMode = codexServiceTierEffectiveMode(effectiveServiceTier);
+    const fastAvailability = codexServiceTierFastAvailability();
+    const message = effectiveMode === "fast" && !fastAvailability.supported
+      ? codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)
+      : serviceTierStatusMessage(controlMode, threadMode, effectiveMode, defaultMode, effectiveServiceTier, codexServiceTierState.serviceTierSource);
     codexServiceTierState = {
       ...codexServiceTierState,
       controlMode,
@@ -1447,7 +1744,9 @@
       threadMode,
       effectiveServiceTier,
       effectiveMode,
-      message: serviceTierStatusMessage(controlMode, threadMode, effectiveMode, defaultMode),
+      fastModelName: fastAvailability.modelName,
+      fastSupported: fastAvailability.supported,
+      message,
     };
   }
 
@@ -1457,16 +1756,22 @@
     if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
     if (codexServiceTierState.status === "unavailable") return { tier: "failed", label: "N/A", disabled: true, title: "服务模式：当前 Codex 版本不支持" };
     if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
+    const fastAvailability = codexServiceTierFastAvailability();
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
+    const inheritedDefault = codexServiceTierState.controlMode === "inherit" && codexServiceTierState.effectiveServiceTier == null;
     const scope = codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode !== "inherit"
       ? `当前 thread：${codexServiceTierState.threadMode}`
-      : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode);
+      : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode, codexServiceTierState.effectiveServiceTier, codexServiceTierState.serviceTierSource);
     const title = [
       `服务模式：${scope}`,
       "Standard：使用标准处理；不在请求上设置 priority。",
-      "Fast：对请求使用 service_tier=\"priority\"，官方说明其延迟更低且更一致，但会按更高价格计费；rate limit 与 Standard 共享，流量快速上涨时可能回落到 Standard。",
+      `Fast：仅支持 ${codexServiceTierFastModelListLabel()}；对支持模型使用 service_tier="priority"，官方说明其延迟更低且更一致，但会按更高价格计费；rate limit 与 Standard 共享，流量快速上涨时可能回落到 Standard。`,
     ].join("\n");
+    if (effectiveMode === "fast" && !fastAvailability.supported) {
+      return { tier: "unsupported", label: "不支持", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；当前请求会按 Standard 发送。` };
+    }
     if (effectiveMode === "fast") return { tier: "fast", label: "fast", title };
+    if (inheritedDefault) return { tier: "default", label: "默认", title };
     return { tier: "standard", label: "standard", title };
   }
 
@@ -1486,8 +1791,15 @@
     const backendConnected = codexPlusBackendStatus.status === "ok";
     const backendChecking = codexPlusBackendStatus.status === "checking";
     const serviceTierReady = backendConnected && codexServiceTierState.status === "ok";
+    if (backendConnected) codexServiceTierMaybeLoadModelCatalog();
+    const fastAvailability = codexServiceTierFastAvailability();
+    const fastDisabled = !serviceTierReady || !fastAvailability.supported;
+    const fastTitle = fastAvailability.supported
+      ? "Fast：使用 service_tier=\"priority\""
+      : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
+    const fastUnsupportedActive = codexServiceTierState.effectiveMode === "fast" && !fastAvailability.supported;
     document.querySelectorAll("[data-codex-service-tier-status]").forEach((node) => {
-      node.dataset.status = backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed");
+      node.dataset.status = fastUnsupportedActive ? "unsupported" : (backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed"));
       node.textContent = backendConnected ? (codexServiceTierState.message || "未读取") : (backendChecking ? "正在检查后端…" : "未连接");
     });
     document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
@@ -1499,8 +1811,9 @@
       button.dataset.active = String(codexServiceTierState.controlMode === "global-standard");
     });
     document.querySelectorAll("[data-codex-service-tier-fast]").forEach((button) => {
-      button.disabled = !serviceTierReady;
+      button.disabled = fastDisabled;
       button.dataset.active = String(codexServiceTierState.controlMode === "global-fast");
+      button.title = fastTitle;
     });
     document.querySelectorAll("[data-codex-service-tier-custom]").forEach((button) => {
       button.disabled = !serviceTierReady;
@@ -1516,22 +1829,52 @@
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard");
     });
     document.querySelectorAll("[data-codex-service-tier-thread-fast]").forEach((button) => {
-      button.disabled = !serviceTierReady;
+      button.disabled = fastDisabled;
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast");
+      button.title = fastTitle;
     });
     refreshCodexServiceTierBadges();
+  }
+
+  async function getConfigTomlServiceTier() {
+    const catalog = await loadCodexModelCatalog();
+    const normalized = String(catalog?.service_tier || "").trim();
+    return normalized || null;
+  }
+
+  async function resolveInheritedServiceTier() {
+    let appSetting = null;
+    let appSettingError = null;
+    try {
+      appSetting = await getCodexServiceTierSetting();
+    } catch (error) {
+      appSettingError = error;
+    }
+    if (appSetting != null && String(appSetting).trim() === "") appSetting = null;
+    let configTier = null;
+    let configError = null;
+    try {
+      configTier = await getConfigTomlServiceTier();
+    } catch (error) {
+      configError = error;
+    }
+    if (appSettingError && configError && appSetting == null && configTier == null) throw appSettingError;
+    const serviceTierSource = appSetting != null ? "codex-app" : (configTier != null ? "config-toml" : null);
+    return { serviceTier: appSetting, configServiceTier: configTier, serviceTierSource };
   }
 
   async function loadCodexServiceTierState() {
     codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "正在读取…" };
     refreshCodexServiceTierControls();
     try {
-      const serviceTier = await getCodexServiceTierSetting();
+      const { serviceTier, configServiceTier, serviceTierSource } = await resolveInheritedServiceTier();
       codexServiceTierState = {
         ...codexServiceTierState,
         status: "ok",
         serviceTier,
-        message: serviceTierGlobalStatusMessage(serviceTier),
+        configServiceTier,
+        serviceTierSource,
+        message: serviceTierGlobalStatusMessage(serviceTier ?? configServiceTier),
       };
     } catch (error) {
       if (isCodexServiceTierUnavailableError(error)) {
@@ -1581,6 +1924,15 @@
       return;
     }
     const normalizedMode = normalizeCodexThreadServiceTierMode(mode);
+    if (normalizedMode === "fast") {
+      const fastAvailability = codexServiceTierFastAvailability();
+      if (!fastAvailability.supported) {
+        codexServiceTierMaybeLoadModelCatalog(true);
+        showToast(codexServiceTierFastUnsupportedMessage(fastAvailability.modelName), null);
+        refreshCodexServiceTierControls();
+        return;
+      }
+    }
     const threadId = validThreadScrollSessionKey(currentSessionRef().session_id);
     setCodexThreadServiceTierOverride(threadId, normalizedMode);
     refreshCodexServiceTierControls();
@@ -1595,54 +1947,315 @@
       return;
     }
     syncCodexServiceTierEffectiveState();
-    setCodexThreadServiceTierMode(codexServiceTierState.effectiveMode === "fast" ? "standard" : "fast");
+    const nextMode = codexServiceTierState.effectiveMode === "fast" ? "standard" : "fast";
+    if (nextMode === "fast") {
+      const fastAvailability = codexServiceTierFastAvailability();
+      if (!fastAvailability.supported) {
+        codexServiceTierMaybeLoadModelCatalog(true);
+        showToast(codexServiceTierFastUnsupportedMessage(fastAvailability.modelName), null);
+        refreshCodexServiceTierControls();
+        return;
+      }
+    }
+    setCodexThreadServiceTierMode(nextMode);
   }
 
   function codexServiceTierRequestMethods() {
     return new Set(["thread/start", "thread/resume", "turn/start"]);
   }
 
+  function isCodexRemoteControlRequest(method = "", params = null, url = "") {
+    const values = [method, url];
+    if (params && typeof params === "object") {
+      try { values.push(JSON.stringify(params)); } catch {}
+    } else if (params != null) {
+      values.push(String(params));
+    }
+    return values.some((value) => {
+      const text = String(value || "").toLowerCase();
+      return [
+        "remote-control",
+        "remote_control",
+        "remotecontrol",
+        "remote control",
+        "remote-control-websocket",
+        "remote_control_token",
+        "remote-control-device-key",
+        "device-key",
+        "browser-use-peer-authorization",
+        "authorize-remote-control-connections",
+        "set-remote-control-connections-enabled",
+        "/codex/remote/control/",
+        "/remote/control/",
+        "/remote-control/",
+        "/remote_control/",
+        "enroll/start",
+        "enroll/finish",
+        "refresh/start",
+        "refresh/finish",
+        "remote_control.enroll",
+      ].some((marker) => text.includes(marker));
+    });
+  }
+
+  function noteCodexRemoteControlPassthrough(method, url = "") {
+    const key = `${String(method || "")}:${String(url || "")}`;
+    const now = Date.now();
+    const last = window.__codexPlusRemoteControlPassthroughAt || {};
+    if (now - Number(last[key] || 0) < 5000) return;
+    last[key] = now;
+    window.__codexPlusRemoteControlPassthroughAt = last;
+    sendCodexPlusDiagnostic("remote_control_request_passthrough", {
+      method: String(method || ""),
+      path: String(url || ""),
+      mode: String(codexPlusBackendSettings.activeRelayMode || "official"),
+    });
+  }
+
+  function codexRemoteSessionProviderNormalizationEnabled() {
+    return codexPlusBackendSettings.relayProfilesEnabled !== false
+      && codexPlusBackendSettings.activeRelayMode === "mixedApi";
+  }
+
+  function codexRemoteSessionTargetProvider() {
+    return String(
+      codexModelCatalog?.codex_model_provider
+      || codexModelCatalog?.codexModelProvider
+      || codexModelCatalog?.model_provider
+      || codexModelCatalog?.modelProvider
+      || ""
+    ).trim();
+  }
+
+  function codexRemoteSessionThreadStartMethod(method) {
+    return ["thread/start", "start-conversation", "start-thread-for-host", "thread-prewarm-start", "prewarm-thread-start-for-host"]
+      .includes(String(method || ""));
+  }
+
+  function applyCodexRemoteSessionProviderOverride(method, params) {
+    if (isCodexRemoteControlRequest(method, params)) {
+      noteCodexRemoteControlPassthrough(method);
+      return params;
+    }
+    if (!codexRemoteSessionThreadStartMethod(method) || !codexRemoteSessionProviderNormalizationEnabled()) return params;
+    if (!params || typeof params !== "object" || Array.isArray(params)) return params;
+    const targetProvider = codexRemoteSessionTargetProvider();
+    if (!targetProvider || targetProvider === "openai") return params;
+    const requested = String(params.modelProvider || params.model_provider || "").trim();
+    if (requested && requested !== "openai" && requested !== targetProvider) return params;
+    const next = { ...params, modelProvider: targetProvider };
+    delete next.model_provider;
+    return next;
+  }
+
   function codexServiceTierOverrideForRequest(method, params, threadIdHint = "") {
+    if (!codexPlusSettings().serviceTierControls) return null;
     if (!codexServiceTierRequestMethods().has(method) || !params || typeof params !== "object") return null;
     const state = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(state.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(state.defaultMode);
-    if (controlMode === "inherit") return null;
+    if (controlMode === "inherit") {
+      const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierInheritedValue();
+      const override = codexServiceTierOverrideResult(method, params, threadIdHint, "inherit", inheritedServiceTier);
+      return override.fastBlocked ? override : null;
+    }
     if (controlMode === "global-standard" || controlMode === "global-fast") {
-      return {
-        threadId: validThreadScrollSessionKey(params.threadId || params.conversationId || threadIdHint || currentSessionRef().session_id),
-        mode: controlMode,
-        serviceTier: controlMode === "global-fast" ? codexFastServiceTierValue() : null,
-      };
+      return codexServiceTierOverrideResult(method, params, threadIdHint, controlMode, controlMode === "global-fast" ? codexFastServiceTierValue() : null);
     }
     const threadId = method === "thread/start"
       ? validThreadScrollSessionKey(params.threadId || threadIdHint)
       : validThreadScrollSessionKey(params.threadId || params.conversationId || threadIdHint || currentSessionRef().session_id);
     const override = threadId ? codexThreadServiceTierOverride(threadId) : codexThreadServiceTierDraft();
     const mode = codexServiceTierEffectiveThreadMode(override?.mode, defaultMode);
-    if (mode === "inherit") return null;
+    if (mode === "inherit") {
+      const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierInheritedValue();
+      const inheritedOverride = codexServiceTierOverrideResult(method, params, threadIdHint, "inherit", inheritedServiceTier);
+      return inheritedOverride.fastBlocked ? { ...inheritedOverride, threadId, mode } : null;
+    }
+    return {
+      ...codexServiceTierOverrideResult(method, params, threadIdHint, mode, mode === "fast" ? codexFastServiceTierValue() : null),
+      threadId,
+      mode,
+    };
+  }
+
+  function codexServiceTierThreadIdForRequest(method, params, threadIdHint = "") {
+    if (method === "thread/start") return validThreadScrollSessionKey(params?.threadId || threadIdHint);
+    return validThreadScrollSessionKey(params?.threadId || params?.conversationId || threadIdHint || currentSessionRef().session_id);
+  }
+
+  function codexServiceTierOverrideResult(method, params, threadIdHint, mode, requestedServiceTier, modelHint = "") {
+    const threadId = codexServiceTierThreadIdForRequest(method, params, threadIdHint);
+    const requestedFast = isFastServiceTierValue(requestedServiceTier);
+    const modelName = codexServiceTierModelForRequest(params, modelHint);
+    const fastSupported = !requestedFast || codexServiceTierFastSupportedForModel(modelName);
     return {
       threadId,
       mode,
-      serviceTier: mode === "fast" ? codexFastServiceTierValue() : null,
+      serviceTier: requestedFast && fastSupported ? codexFastServiceTierValue() : null,
+      requestedServiceTier: requestedServiceTier || null,
+      modelName,
+      fastSupported,
+      fastBlocked: requestedFast && !fastSupported,
     };
   }
 
   function applyCodexServiceTierRequestOverride(method, params, threadIdHint = "") {
-    const override = codexServiceTierOverrideForRequest(method, params, threadIdHint);
-    if (!override) return params;
-    const nextParams = { ...(params || {}), serviceTier: override.serviceTier };
+	if (isCodexRemoteControlRequest(method, params)) {
+		noteCodexRemoteControlPassthrough(method);
+		return params;
+	}
+	const providerParams = applyCodexRemoteSessionProviderOverride(method, params);
+	const override = codexServiceTierOverrideForRequest(method, params, threadIdHint);
+	if (!override) return providerParams;
+	const nextParams = { ...(providerParams || {}), serviceTier: override.serviceTier };
+    if (Object.prototype.hasOwnProperty.call(nextParams, "service_tier") || override.fastBlocked) {
+      nextParams.service_tier = override.serviceTier;
+    }
     sendCodexPlusDiagnostic("service_tier_request_override_applied", {
       method,
       threadId: override.threadId || "",
       mode: override.mode,
       serviceTier: override.serviceTier || "standard",
+      model: override.modelName || "",
+      fastSupported: override.fastSupported !== false,
+      fastBlocked: !!override.fastBlocked,
     });
     return nextParams;
   }
 
-  function codexServiceTierRequestOverride(message) {
+  function codexRemoteSessionStartedThreadId(value) {
+    const queue = [{ value, depth: 0 }];
+    const seen = new WeakSet();
+    while (queue.length) {
+      const current = queue.shift();
+      const candidate = current?.value;
+      if (!candidate || typeof candidate !== "object" || seen.has(candidate)) continue;
+      seen.add(candidate);
+      const method = String(candidate.method || candidate.type || "");
+      if (method === "thread/started") {
+        const thread = candidate.params?.thread || candidate.thread || candidate.payload?.thread;
+        const id = String(thread?.id || candidate.params?.threadId || candidate.threadId || "").trim();
+        if (id) return id;
+      }
+      if (method === "browser-use-session-route-capture" || method === "browser-sidebar-browser-use-state") {
+        const active = candidate.params?.isActive ?? candidate.params?.is_active ?? candidate.isActive ?? candidate.is_active;
+        if (method !== "browser-sidebar-browser-use-state" || active === true) {
+          const id = String(candidate.params?.conversationId || candidate.params?.conversation_id || candidate.conversationId || candidate.conversation_id || "").trim();
+          if (id) return id;
+        }
+      }
+      if (current.depth >= 4) continue;
+      ["message", "response", "detail", "data", "payload", "params", "request"].forEach((key) => {
+        const nested = candidate[key];
+        if (nested && typeof nested === "object") queue.push({ value: nested, depth: current.depth + 1 });
+      });
+    }
+    return "";
+  }
+
+  function scheduleCodexRemoteSessionRecovery(threadId) {
+    if (!codexRemoteSessionProviderNormalizationEnabled()) return false;
+    const id = String(threadId || "").trim();
+    if (!id || id.length > 128) return false;
+    window.__codexPlusRemoteSessionRecoveryPending = window.__codexPlusRemoteSessionRecoveryPending || new Map();
+    const pending = window.__codexPlusRemoteSessionRecoveryPending;
+    if (pending.has(id)) return false;
+    const delays = [100, 350, 800, 1600, 3000];
+    const state = { timer: 0 };
+    const finish = () => {
+      if (state.timer) clearTimeout(state.timer);
+      if (pending.get(id) === state) pending.delete(id);
+    };
+    const attempt = async (index) => {
+      state.timer = 0;
+      const result = await postJson("/remote-control-session/recover", { thread_id: id }).catch(() => null);
+      const message = String(result?.message || "");
+      if (result?.status === "ok" || /disabled for the active profile/.test(message) || index + 1 >= delays.length) {
+        finish();
+        return;
+      }
+      state.timer = setTimeout(() => void attempt(index + 1), delays[index + 1] - delays[index]);
+    };
+    state.timer = setTimeout(() => void attempt(0), delays[0]);
+    pending.set(id, state);
+    return true;
+  }
+
+  function observeCodexRemoteSessionNotification(value) {
+    const id = codexRemoteSessionStartedThreadId(value);
+    return id ? scheduleCodexRemoteSessionRecovery(id) : false;
+  }
+
+  function installCodexRemoteSessionRecoveryListener() {
+    if (window.__codexPlusRemoteSessionRecoveryInstalled === codexRemoteSessionRecoveryVersion) return;
+    if (window.__codexPlusRemoteSessionRecoveryMessageHandler) {
+      window.removeEventListener("message", window.__codexPlusRemoteSessionRecoveryMessageHandler, true);
+    }
+    if (window.__codexPlusRemoteSessionRecoveryViewHandler) {
+      window.removeEventListener("codex-message-from-view", window.__codexPlusRemoteSessionRecoveryViewHandler, true);
+    }
+    const messageHandler = (event) => {
+      if (event?.source !== window) return;
+      const origin = String(event?.origin || "");
+      if (origin && origin !== "null" && origin !== window.location.origin) return;
+      observeCodexRemoteSessionNotification(event.data);
+    };
+    const viewHandler = (event) => observeCodexRemoteSessionNotification(event?.detail);
+    window.__codexPlusRemoteSessionRecoveryMessageHandler = messageHandler;
+    window.__codexPlusRemoteSessionRecoveryViewHandler = viewHandler;
+    window.addEventListener("message", messageHandler, true);
+    window.addEventListener("codex-message-from-view", viewHandler, true);
+    window.__codexPlusRemoteSessionRecoveryInstalled = codexRemoteSessionRecoveryVersion;
+  }
+
+  function installCodexRemoteSessionDispatcherSubscription(dispatcher) {
+    if (!dispatcher || typeof dispatcher.subscribe !== "function") return false;
+    if (window.__codexPlusRemoteSessionRecoveryDispatcher === dispatcher
+        && window.__codexPlusRemoteSessionRecoveryDispatcherVersion === codexRemoteSessionRecoveryVersion) return true;
+    try { window.__codexPlusRemoteSessionRecoveryDispatcherUnsubscribe?.(); } catch {}
+    const threadHandler = (payload) => observeCodexRemoteSessionNotification({ method: "thread/started", params: payload });
+    const browserHandler = (payload) => observeCodexRemoteSessionNotification({ type: "browser-sidebar-browser-use-state", params: payload });
+    const unsubscribers = [
+      dispatcher.subscribe("thread/started", threadHandler),
+      dispatcher.subscribe("browser-sidebar-browser-use-state", browserHandler),
+    ];
+    window.__codexPlusRemoteSessionRecoveryDispatcher = dispatcher;
+    window.__codexPlusRemoteSessionRecoveryDispatcherVersion = codexRemoteSessionRecoveryVersion;
+    window.__codexPlusRemoteSessionRecoveryDispatcherUnsubscribe = () => unsubscribers.forEach((unsubscribe) => {
+      if (typeof unsubscribe === "function") {
+        try { unsubscribe(); } catch {}
+      }
+    });
+    return true;
+  }
+
+  function codexServiceTierRequestOverride(message, skipFetchEnvelope = false) {
     if (!message || typeof message !== "object") return message;
+    if (!skipFetchEnvelope && message.type === "fetch" && typeof message.url === "string") {
+      if (isCodexRemoteControlRequest("fetch", message.body, message.url)) {
+        noteCodexRemoteControlPassthrough("fetch", message.url);
+        return message;
+      }
+      const prefix = "vscode://codex/";
+      if (!message.url.startsWith(prefix)) return message;
+      const requestType = message.url.slice(prefix.length).split(/[?#]/, 1)[0];
+      let params = message.body;
+      const bodyWasString = typeof params === "string";
+      if (bodyWasString) {
+        try { params = JSON.parse(params); } catch { return message; }
+      }
+      if (!params || typeof params !== "object" || Array.isArray(params)) return message;
+      const bodyHadType = Object.prototype.hasOwnProperty.call(params, "type");
+      const originalBodyType = params.type;
+      const logical = { ...params, type: requestType };
+      const patched = codexServiceTierRequestOverride(logical, true);
+      if (patched === logical) return message;
+      const nextParams = { ...patched };
+      delete nextParams.type;
+      if (bodyHadType) nextParams.type = originalBodyType;
+      return { ...message, body: bodyWasString ? JSON.stringify(nextParams) : nextParams };
+    }
     if (message.type === "send-cli-request-for-host") {
       const method = String(message.method || "");
       const params = applyCodexServiceTierRequestOverride(method, message.params);
@@ -1666,15 +2279,8 @@
       return { ...message, request: { ...message.request, params } };
     }
     if (message.type === "start-conversation") {
-      const state = readThreadServiceTierState();
-      const controlMode = normalizeCodexServiceTierControlMode(state.mode);
-      if (controlMode === "global-standard") return { ...message, serviceTier: null };
-      if (controlMode === "global-fast") return { ...message, serviceTier: codexFastServiceTierValue() };
-      if (controlMode === "inherit") return message;
-      const draft = codexThreadServiceTierDraft();
-      const mode = codexServiceTierEffectiveThreadMode(draft?.mode, state.defaultMode);
-      if (mode === "inherit") return message;
-      return { ...message, serviceTier: mode === "fast" ? codexFastServiceTierValue() : null };
+      const nextMessage = applyCodexServiceTierRequestOverride("thread/start", message);
+      return nextMessage === message ? message : nextMessage;
     }
     if (message.type === "prewarm-thread-start-for-host" && message.params && typeof message.params === "object") {
       const params = applyCodexServiceTierRequestOverride("thread/start", message.params);
@@ -1713,18 +2319,16 @@
           }
           return;
         }
-        if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
-          window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
-          window.__codexServiceTierRequestOverrideInstalling = "";
-          return;
+        if (!dispatcher.__codexServiceTierOriginalDispatchMessage) {
+          dispatcher.__codexServiceTierOriginalDispatchMessage = dispatcher.dispatchMessage.bind(dispatcher);
         }
-        dispatcher.__codexServiceTierOriginalDispatchMessage = dispatcher.dispatchMessage.bind(dispatcher);
         dispatcher.dispatchMessage = (type, payload) => {
           const message = codexServiceTierRequestOverride({ ...(payload || {}), type });
           const nextType = message?.type || type;
           const { type: _type, ...nextPayload } = message || {};
           return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
         };
+        installCodexRemoteSessionDispatcherSubscription(dispatcher);
         window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
         window.__codexServiceTierRequestOverrideInstalling = "";
         window.__codexServiceTierDispatcherPatchRetryAfterMs = 0;
@@ -1761,6 +2365,12 @@
         throw new Error("invalid backend settings response");
       }
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+      window.__codexPlusDreamSkinSettings = {
+        enabled: settings.codexAppDreamSkinEnabled,
+        paused: settings.codexAppDreamSkinPaused,
+        config: settings.codexAppDreamSkinThemeConfig,
+      };
+      installCodexPlusDreamSkin();
       codexPlusBackendSettingsLoaded = true;
       refreshCodexPlusBackendToggles();
       return true;
@@ -1819,6 +2429,7 @@
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
     });
     renderCodexPlusMenu();
+    installCodexPlusDreamSkin();
     scan();
   }
 
@@ -1863,6 +2474,10 @@
     const nextStatus = await withBackendTimeout(postJson("/backend/status", {}));
     if (seq !== codexPlusBackendCheckSeq) return;
     codexPlusBackendStatus = nextStatus;
+    if (nextStatus?.status === "ok" && typeof nextStatus.hideOfficialUsageAlert === "boolean") {
+      window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
+      refreshOfficialUsageAlertVisibility();
+    }
     if (nextStatus?.status !== "ok") {
       sendCodexPlusDiagnostic("backend_check_failed", {
         status: nextStatus?.status || "unknown",
@@ -1983,10 +2598,6 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock" ${pluginPatchDisabledInRelayMode() ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">插件列表自动展开</div><div class="codex-plus-row-description">进入插件页后自动点击“显示更多”，展开当前 marketplace 的完整列表。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginAutoExpand" ${pluginPatchDisabledInRelayMode() ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
-            </div>
-            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
@@ -1999,7 +2610,7 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
+              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承优先读取 Codex 应用内设置，其次读取 config.toml 的 service_tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
               <div class="codex-plus-service-tier-control">
                 <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
                 <div class="codex-plus-service-tier-actions">
@@ -2010,7 +2621,7 @@
                 </div>
                 <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
                   <span class="codex-plus-service-tier-thread-label">当前 thread 覆盖</span>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 config.toml">继承</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 Codex 默认设置">继承</button>
                   <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
                   <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
                 </div>
@@ -2031,10 +2642,6 @@
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">会话项目移动</div><div class="codex-plus-row-description">在会话列表悬停显示移动按钮，可移动到普通对话或其他本地项目。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="projectMove"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">对话 Timeline</div><div class="codex-plus-row-description">在对话右侧显示用户提问时间线，悬停查看摘要，点击跳转。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">会话 ID 标识</div><div class="codex-plus-row-description">在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。</div></div>
@@ -2733,17 +3340,19 @@
   function installPluginMarketplaceRequestPatch() {
     if (window.__codexPluginMarketplaceUnlockInstalled === codexPluginMarketplaceUnlockVersion) return;
     if (pluginPatchDisabledInRelayMode() || !codexPlusSettings().pluginMarketplaceUnlock) return;
-    void loadCodexAppModule("app-server-manager-signals-").then((module) => {
+    void loadAppServerRequestCandidates().then(({ modules, candidates, sources, discovery }) => {
       let patchedCount = 0;
-      Object.values(module || {}).filter((value) => value && typeof value === "object").forEach((candidate) => {
+      candidates.forEach((candidate) => {
         if (patchPluginMarketplaceRequestClient(candidate)) patchedCount += 1;
-        try {
-          if (typeof candidate.get === "function" && patchPluginMarketplaceRequestClient(candidate.get())) patchedCount += 1;
-        } catch {
-        }
       });
       if (patchedCount > 0) window.__codexPluginMarketplaceUnlockInstalled = codexPluginMarketplaceUnlockVersion;
-      sendCodexPlusDiagnostic("plugin_marketplace_request_patch_installed", { patchedCount });
+      sendCodexPlusDiagnostic(patchedCount > 0 ? "plugin_marketplace_request_patch_installed" : "plugin_marketplace_request_patch_not_found", {
+        moduleCount: modules.length,
+        candidateCount: candidates.length,
+        patchedCount,
+        sources,
+        discovery,
+      });
     }).catch((error) => sendCodexPlusDiagnostic("plugin_marketplace_request_patch_failed", { errorMessage: error?.message || String(error) }));
   }
 
@@ -2804,16 +3413,55 @@
     return archivePageHintVisible() && archivedRows().length > 0;
   }
 
+  function isClientNewThreadId(value) {
+    return /^(?:local:)?client-new-thread:/i.test(String(value || "").trim());
+  }
+
+  function normalizedCodexThreadUuid(value) {
+    const id = String(value || "").trim().replace(/^local:/i, "");
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? id : "";
+  }
+
+  function reactConversationIdFromRow(row) {
+    const fiberKey = Object.getOwnPropertyNames(row).find((key) => key.startsWith("__reactFiber$"));
+    let fiber = fiberKey ? row[fiberKey] : null;
+    for (let fiberDepth = 0; fiber && fiberDepth < 16; fiberDepth += 1, fiber = fiber.return) {
+      for (const props of [fiber.pendingProps, fiber.memoizedProps]) {
+        const directId = normalizedCodexThreadUuid(props?.conversationId);
+        if (directId) return directId;
+        const childId = normalizedCodexThreadUuid(props?.children?.props?.conversationId);
+        if (childId) return childId;
+      }
+    }
+    return "";
+  }
+
   function sessionRefFromRow(row) {
     const href = row.getAttribute("href") || row.querySelector("a")?.getAttribute("href") || "";
     const idMatch = href.match(/(?:session|conversation|thread)[=/:-]([A-Za-z0-9_.-]+)/i) || href.match(/([A-Za-z0-9_-]{8,})$/);
     const codexThreadId = row.getAttribute("data-app-action-sidebar-thread-id") || "";
     const fallbackId = row.getAttribute("data-session-id") || row.getAttribute("data-testid") || "";
-    const sessionId = codexThreadId || (idMatch && idMatch[1]) || fallbackId;
+    const placeholderThreadId = isClientNewThreadId(codexThreadId);
+    const hrefId = idMatch && idMatch[1];
+    const canonicalHrefId = normalizedCodexThreadUuid(hrefId);
+    const hrefIsTemporary = isClientNewThreadId(href)
+      || isClientNewThreadId(hrefId)
+      || /(?:^|[=/])(?:local:)?client-new-thread:/i.test(href);
+    const sessionId = placeholderThreadId
+      ? canonicalHrefId || (!hrefIsTemporary ? reactConversationIdFromRow(row) : "")
+      : normalizedCodexThreadUuid(codexThreadId)
+        || canonicalHrefId
+        || codexThreadId
+        || hrefId
+        || fallbackId;
     const titleNode = row.querySelector(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`);
     const rawTitle = (titleNode?.textContent || (titleNode ? "" : (row.textContent || "Untitled session")));
     const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目)(\s*(导出|删除|移动|移出项目))*$/g, "")).trim().slice(0, 160);
     return { session_id: sessionId, title };
+  }
+
+  if (window.__CODEX_PLUS_TEST_SESSION_REF__) {
+    window.__codexPlusSessionRefTest = { fromRow: sessionRefFromRow };
   }
 
   function threadIdBadgeTitleNode(row) {
@@ -3621,21 +4269,34 @@
   }
 
   async function postJson(path, payload, options = {}) {
+    const backendStatusRoute = path === "/backend/status" || path === "/backend/repair";
+    const deleteRoute = path === "/delete";
+    const bridgeTimeoutMs = Number.isFinite(options?.timeoutMs) && options.timeoutMs > 0
+      ? options.timeoutMs
+      : (backendStatusRoute ? 2000 : deleteRoute ? 60000 : 4000);
+
     async function fetchFromHelper(path, payload) {
-      const response = await fetch(`${helperBase}${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload || {}),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        return {
-          status: "failed",
-          message: result?.message || `HTTP ${response.status}`,
-          httpStatus: response.status,
-        };
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      const timeout = controller ? setTimeout(() => controller.abort(), bridgeTimeoutMs) : null;
+      try {
+        const response = await fetch(`${helperBase}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+          ...(controller ? { signal: controller.signal } : {}),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          return {
+            status: "failed",
+            message: result?.message || `HTTP ${response.status}`,
+            httpStatus: response.status,
+          };
+        }
+        return result;
+      } finally {
+        if (timeout) clearTimeout(timeout);
       }
-      return result;
     }
     async function fetchFromHelperOrFailure(path, payload) {
       try {
@@ -3643,7 +4304,8 @@
       } catch (error) {
         return {
           status: "failed",
-          message: "本地 helper 未连接",
+          message: error?.name === "AbortError" ? "本地 helper 请求超时" : "本地 helper 未连接",
+          timeout: error?.name === "AbortError",
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
         };
@@ -3655,8 +4317,6 @@
         new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端桥接超时", timeout: true }), timeoutMs)),
       ]);
     }
-    const backendStatusRoute = path === "/backend/status" || path === "/backend/repair";
-    const bridgeTimeoutMs = Number.isFinite(options?.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : (backendStatusRoute ? 2000 : 4000);
     if (window.__codexSessionDeleteBridge) {
       try {
         const bridgeResult = await bridgeWithTimeout(path, payload, bridgeTimeoutMs);
@@ -3849,7 +4509,7 @@
     return Array.from(new Set(values.filter((value) => typeof value === "string" && value.trim().length > 0)));
   }
 
-  let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", provider_name: "", models: [], modelMetadata: {}, sources: [], responses_api: { status: "unknown", message: "" } };
+  let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], modelMetadata: {}, sources: [], responses_api: { status: "unknown", message: "" } };
   let codexModelCatalogLoadedAt = 0;
   let codexModelCatalogPromise = null;
   const codexPlusModelListRequestIds = new Set();
@@ -3871,14 +4531,14 @@
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
       .then((result) => {
-        codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
         patchCodexModelWhitelist();
         return codexModelCatalog;
       })
       .catch((error) => {
-        codexModelCatalog = { status: "failed", message: String(error?.message || error), model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        codexModelCatalog = { status: "failed", message: String(error?.message || error), model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         codexModelCatalogLoadedAt = Date.now();
         return codexModelCatalog;
       })
@@ -4167,7 +4827,71 @@
     return changed;
   }
 
+  function appServerModelRequestMethod(method, params) {
+    if (method === "send-cli-request-for-host" && params?.method) return String(params.method);
+    return String(method || "");
+  }
+
+  function patchAppServerModelResult(method, result) {
+    if (method !== "list-models-for-host") return result;
+    try {
+      if (Array.isArray(result)) patchModelArray(result, true);
+      if (Array.isArray(result?.data)) patchModelArray(result.data, true);
+      if (Array.isArray(result?.models)) patchModelArray(result.models, true);
+    } catch (error) {
+      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+    }
+    return result;
+  }
+
+  function patchAppServerModelRequestClient(client) {
+    if (!client || typeof client.sendRequest !== "function") return false;
+    if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
+    const original = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
+    client.__codexPlusModelOriginalSendRequest = original;
+    client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
+      const requestMethod = appServerModelRequestMethod(String(method || ""), params);
+      if (isCodexRemoteControlRequest(requestMethod, params)) {
+        noteCodexRemoteControlPassthrough(requestMethod);
+        return original(method, params, options);
+      }
+      const nextParams = applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const result = await original(method, nextParams, options);
+      if (!codexPlusModelUnlockEnabled()) return result;
+      if (!codexPlusModelNames().length) await loadCodexModelCatalog();
+      return patchAppServerModelResult(requestMethod, result);
+    };
+    client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
+    return true;
+  }
+
+  function installAppServerModelRequestPatch() {
+    if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
+    if (window.__codexPlusAppServerModelRequestPatchPromise) return;
+    window.__codexPlusAppServerModelRequestPatchPromise = loadAppServerRequestCandidates()
+      .then(({ modules, candidates, sources, discovery }) => {
+        let patchedCount = 0;
+        candidates.forEach((candidate) => {
+          if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
+        });
+        if (patchedCount > 0) window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
+        sendCodexPlusDiagnostic(patchedCount > 0 ? "model_app_server_request_patch_installed" : "model_app_server_request_patch_not_found", {
+          moduleCount: modules.length,
+          candidateCount: candidates.length,
+          patchedCount,
+          sources,
+          discovery,
+        });
+      })
+      .catch((error) => sendCodexPlusDiagnostic("model_app_server_request_patch_failed", { errorMessage: error?.message || String(error) }))
+      .finally(() => {
+        window.__codexPlusAppServerModelRequestPatchPromise = null;
+      });
+  }
+
   function patchCodexModelWhitelist() {
+    installAppServerModelRequestPatch();
     if (!codexPlusModelUnlockEnabled()) return;
     installModelJsonResponsePatch();
     patchAppServerModelMessages();
@@ -4811,11 +5535,23 @@
 
   async function refreshRecentConversationsForHost() {
     try {
-      const signals = await import("./assets/app-server-manager-signals-C1h8B-R-.js");
-      if (typeof signals.rn === "function") await signals.rn("refresh-recent-conversations-for-host", { hostId: "local", sortKey: "updated_at" });
+      const signals = await loadOptionalCodexAppModule("app-server-manager-signals-");
+      const sendRequest = Object.values(signals || {}).find((candidate) => {
+        if (typeof candidate !== "function") return false;
+        try {
+          const source = Function.prototype.toString.call(candidate).replace(/\s+/g, "");
+          return source.includes(".sendRequest(") && source.includes("return");
+        } catch {
+          return false;
+        }
+      });
+      if (typeof sendRequest !== "function") return false;
+      await sendRequest("refresh-recent-conversations-for-host", { hostId: "local", sortKey: "updated_at" });
+      return true;
     } catch (error) {
       window.__codexProjectMoveRefreshFailures = window.__codexProjectMoveRefreshFailures || [];
       window.__codexProjectMoveRefreshFailures.push(String(error?.stack || error));
+      return false;
     }
   }
 
@@ -5095,6 +5831,10 @@
       undo.addEventListener("click", async () => {
         const result = await postJson("/undo", { undo_token: undoToken });
         toast.textContent = result.message || "撤销完成";
+        if (result.status === "undone") {
+          const refreshed = await refreshRecentConversationsForHost();
+          if (!refreshed) window.location.reload();
+        }
         setTimeout(() => toast.remove(), 5000);
       });
       toast.appendChild(undo);
@@ -5176,6 +5916,15 @@
     }
   }
 
+  function setDeleteButtonBusy(button, busy) {
+    if (!button) return;
+    button.disabled = !!busy;
+    button.setAttribute("aria-busy", busy ? "true" : "false");
+    button.dataset.codexDeleteInFlight = busy ? "true" : "false";
+    button.style.pointerEvents = busy ? "none" : "";
+    button.style.opacity = busy ? "0.6" : "";
+  }
+
   function removeDeletedRow(row, button, ref) {
     releaseDeleteFocus(row, button);
     const shouldReload = isCurrentSessionRow(row, ref);
@@ -5207,12 +5956,29 @@
     confirmDelete(ref.title).then(async (confirmed) => {
       if (!confirmed) return;
       releaseDeleteFocus(row, button);
-      const result = await postJson("/delete", ref);
-      if (result.status === "server_deleted" || result.status === "local_deleted") {
-        removeDeletedRow(row, button, ref);
-        showToast(result.message || "删除成功", result.undo_token);
-      } else {
-        showToast(result.message || "删除失败", null);
+      setDeleteButtonBusy(button, true);
+      let result;
+      try {
+        result = await postJson("/delete", ref, { timeoutMs: 60000 });
+        if (result.status === "server_deleted" || result.status === "local_deleted") {
+          removeDeletedRow(row, button, ref);
+          showToast(result.message || "删除成功", result.undo_token);
+        } else if (result.timeout || result.status === "delete_in_progress") {
+          showToast("删除仍在处理中，请勿重复点击。稍后刷新会话列表查看结果。", null);
+        } else {
+          showToast(result.message || "删除失败", null);
+        }
+      } catch (error) {
+        showToast(`删除失败：${error?.message || error}`, null);
+      } finally {
+        // A timed-out bridge request may still be deleting in the helper. Keep
+        // this row locked briefly so a late retry cannot create a duplicate.
+        const keepLocked = !!result?.timeout || result?.status === "delete_in_progress";
+        if (keepLocked) {
+          setTimeout(() => setDeleteButtonBusy(button, false), 30000);
+        } else {
+          setDeleteButtonBusy(button, false);
+        }
       }
     });
   }
@@ -5522,7 +6288,10 @@
       moveButton.className = `${actionButtonClass} ${projectMoveButtonClass}`;
       moveButton.dataset.codexProjectMoveVersion = codexProjectMoveVersion;
       configureActionButton(moveButton, "移动", "↗");
-      const openProjectMove = (event) => openProjectMoveMenuForRow(row, moveButton, ref, event);
+      const openProjectMove = (event) => {
+        const currentRef = sessionRefFromRow(row);
+        if (currentRef.session_id) openProjectMoveMenuForRow(row, moveButton, currentRef, event);
+      };
       installActionButtonEvents(row, moveButton, openProjectMove);
       group.appendChild(moveButton);
       setTimeout(() => refreshActionButton(moveButton, row, openProjectMove), 0);
@@ -5535,7 +6304,8 @@
       configureActionButton(exportButton, "导出", "⇩");
       const openExport = (event) => {
         stopActionButtonEvent(row, exportButton, event);
-        exportMarkdown(ref);
+        const currentRef = sessionRefFromRow(row);
+        if (currentRef.session_id) exportMarkdown(currentRef);
       };
       installActionButtonEvents(row, exportButton, openExport);
       group.appendChild(exportButton);
@@ -5547,7 +6317,10 @@
       deleteButton.className = `${actionButtonClass} ${buttonClass}`;
       deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
       configureSvgActionButton(deleteButton, "删除", trashIconSvg());
-      const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, ref, event);
+      const openDeleteConfirm = (event) => {
+        const currentRef = sessionRefFromRow(row);
+        if (currentRef.session_id) openDeleteConfirmForRow(row, deleteButton, currentRef, event);
+      };
       installActionButtonEvents(row, deleteButton, openDeleteConfirm);
       group.appendChild(deleteButton);
       setTimeout(() => refreshActionButton(deleteButton, row, openDeleteConfirm), 0);
@@ -5633,10 +6406,12 @@
     for (const row of rows) {
       const ref = await resolveArchivedThread(row);
       if (!ref.session_id) continue;
-      const result = await postJson("/delete", ref);
+      const result = await postJson("/delete", ref, { timeoutMs: 60000 });
       if (result.status === "server_deleted" || result.status === "local_deleted") {
         row.remove();
         deleted += 1;
+      } else if (result.timeout || result.status === "delete_in_progress") {
+        showToast("删除仍在处理中，请勿重复点击。稍后刷新会话列表查看结果。", null);
       }
     }
     showToast(`已删除 ${deleted} 个归档会话`, null);
@@ -5690,12 +6465,24 @@
           return;
         }
         if (!(await confirmDelete(ref.title))) return;
-        const result = await postJson("/delete", ref);
-        if (result.status === "server_deleted" || result.status === "local_deleted") {
-          row.remove();
-          showToast(result.message || "删除成功", result.undo_token);
-        } else {
-          showToast(result.message || "删除失败", null);
+        setDeleteButtonBusy(deleteButton, true);
+        let result;
+        try {
+          result = await postJson("/delete", ref, { timeoutMs: 60000 });
+          if (result.status === "server_deleted" || result.status === "local_deleted") {
+            row.remove();
+            showToast(result.message || "删除成功", result.undo_token);
+          } else if (result.timeout || result.status === "delete_in_progress") {
+            showToast("删除仍在处理中，请勿重复点击。稍后刷新会话列表查看结果。", null);
+          } else {
+            showToast(result.message || "删除失败", null);
+          }
+        } catch (error) {
+          showToast(`删除失败：${error?.message || error}`, null);
+        } finally {
+          const keepLocked = !!result?.timeout || result?.status === "delete_in_progress";
+          if (keepLocked) setTimeout(() => setDeleteButtonBusy(deleteButton, false), 30000);
+          else setDeleteButtonBusy(deleteButton, false);
         }
       }, true);
       insertionPoint.insertAdjacentElement("afterend", deleteButton);
@@ -6049,6 +6836,7 @@
     return uniqueValues([
       codexModelCatalog.provider_name,
       codexModelCatalog.model_provider,
+      codexModelCatalog.codex_model_provider,
     ]).map((value) => value.toLowerCase());
   }
 
@@ -6423,7 +7211,9 @@
 
   function scanLightweight() {
     installStyle();
+    refreshOfficialUsageAlertVisibility();
     installCodexServiceTierDispatcherPatch();
+    installCodexRemoteSessionRecoveryListener();
     installCodexPlusMenu();
     installPasteFix();
     scheduleBackendHeartbeat();
@@ -6435,6 +7225,32 @@
     installThreadScrollRouteHooks();
     scheduleThreadScrollSync(true);
     refreshCodexServiceTierControls();
+  }
+
+  function officialUsageAlertHidden() {
+    return window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ === true;
+  }
+
+  function officialUsageAlertCards(scope = document) {
+    const root = scope?.querySelectorAll ? scope : document;
+    return Array.from(root.querySelectorAll('aside.app-shell-left-panel [role="status"][aria-live="polite"]')).filter((card) => {
+      if (!(card instanceof HTMLElement) || !card.querySelector('progress[max="100"]')) return false;
+      return Array.from(card.querySelectorAll("button")).some((button) =>
+        /dismiss usage alert|关闭使用量提醒/i.test(button.getAttribute("aria-label") || ""),
+      );
+    });
+  }
+
+  function refreshOfficialUsageAlertVisibility() {
+    document.querySelectorAll('[data-codex-plus-usage-alert-hidden="true"]').forEach((container) => {
+      delete container.dataset.codexPlusUsageAlertHidden;
+    });
+    if (!officialUsageAlertHidden()) return;
+    officialUsageAlertCards().forEach((card) => {
+      const parent = card.parentElement;
+      const container = parent?.children.length === 1 && parent.matches("div.w-full") ? parent : card;
+      container.dataset.codexPlusUsageAlertHidden = "true";
+    });
   }
 
   let zedRemoteStatusPromise = null;
@@ -7160,5 +7976,10 @@
   window.addEventListener("resize", window.__codexPlusResizeHandler);
   window.__codexSessionDeleteObserver?.disconnect();
   window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);
-  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["data-app-action-sidebar-thread-id", "href"],
+  });
 })();

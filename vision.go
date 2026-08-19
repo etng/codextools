@@ -157,7 +157,7 @@ func analyzeAndReplaceImages(ctx context.Context, messages []any, profile relayP
 		return false, nil
 	}
 	contextWindow, textTokens, available := visionContextCapacity(messages, profile, requestModel)
-	currentIndex := lastUserMessageIndex(messages)
+	currentIndex := latestVLMImageMessageIndex(messages)
 	if available <= 1 {
 		imageCount := 0
 		if currentIndex >= 0 {
@@ -329,18 +329,33 @@ type vlmImageMessage struct {
 
 func collectRecentVLMImageMessages(messages []any, depthLimit int) []vlmImageMessage {
 	result := []vlmImageMessage{}
-	userCount := 0
-	for index := len(messages) - 1; index >= 0 && userCount < depthLimit; index-- {
+	messageCount := 0
+	for index := len(messages) - 1; index >= 0 && messageCount < depthLimit; index-- {
 		message, _ := messages[index].(map[string]any)
-		if stringFromAny(message["role"]) != "user" {
+		if !isVLMMessageRole(message) {
 			continue
 		}
-		userCount++
+		messageCount++
 		if urls := collectVLMImageURLs(messages[index]); len(urls) > 0 {
 			result = append(result, vlmImageMessage{Message: index, URLs: urls})
 		}
 	}
 	return result
+}
+
+func isVLMMessageRole(message map[string]any) bool {
+	role := stringFromAny(message["role"])
+	return role == "user" || role == "tool"
+}
+
+func latestVLMImageMessageIndex(messages []any) int {
+	for index := len(messages) - 1; index >= 0; index-- {
+		message, _ := messages[index].(map[string]any)
+		if isVLMMessageRole(message) && len(collectVLMImageURLs(messages[index])) > 0 {
+			return index
+		}
+	}
+	return -1
 }
 
 func collectVLMImageURLs(rawMessage any) []string {
@@ -373,7 +388,7 @@ func goldenVLMUserCutoff(messages []any, depth int) int {
 	found := 0
 	for index := len(messages) - 1; index >= 0 && found < depth; index-- {
 		message, _ := messages[index].(map[string]any)
-		if stringFromAny(message["role"]) == "user" {
+		if isVLMMessageRole(message) {
 			cutoff = index
 			found++
 		}

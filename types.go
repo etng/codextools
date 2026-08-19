@@ -37,6 +37,7 @@ type backendSettings struct {
 	CodexAppNativeMenuPlacement      bool                    `json:"codexAppNativeMenuPlacement"`
 	CodexAppNativeMenuLocalization   bool                    `json:"codexAppNativeMenuLocalization"`
 	CodexAppServiceTierControls      bool                    `json:"codexAppServiceTierControls"`
+	CodexAppPetRealMouseLook         bool                    `json:"codexAppPetRealMouseLook"`
 	CodexAppStepwiseEnabled          bool                    `json:"codexAppStepwiseEnabled"`
 	CodexAppStepwiseDirectSend       bool                    `json:"codexAppStepwiseDirectSend"`
 	CodexAppStepwiseBaseURL          string                  `json:"codexAppStepwiseBaseUrl"`
@@ -55,6 +56,11 @@ type backendSettings struct {
 	CodexAppImageOverlayPath         string                  `json:"codexAppImageOverlayPath"`
 	CodexAppImageOverlayOpacity      int                     `json:"codexAppImageOverlayOpacity"`
 	CodexAppImageOverlayFitMode      string                  `json:"codexAppImageOverlayFitMode"`
+	CodexAppDreamSkinEnabled         bool                    `json:"codexAppDreamSkinEnabled"`
+	CodexAppDreamSkinPaused          bool                    `json:"codexAppDreamSkinPaused"`
+	CodexAppDreamSkinTheme           string                  `json:"codexAppDreamSkinTheme"`
+	CodexAppDreamSkinThemeConfig     dreamSkinThemeConfig    `json:"codexAppDreamSkinThemeConfig"`
+	CodexAppDreamSkinImagePath       string                  `json:"codexAppDreamSkinImagePath"`
 	CodexGoalsEnabled                bool                    `json:"codexGoalsEnabled"`
 	MobileControlEnabled             bool                    `json:"mobileControlEnabled"`
 	MobileControlRelayURL            string                  `json:"mobileControlRelayUrl"`
@@ -94,6 +100,7 @@ type relayProfile struct {
 	Protocol                      string                `json:"protocol"`
 	RelayMode                     string                `json:"relayMode"`
 	OfficialMixAPIKey             bool                  `json:"officialMixApiKey"`
+	HideOfficialUsageAlert        bool                  `json:"hideOfficialUsageAlert"`
 	OfficialAuthContents          string                `json:"officialAuthContents"`
 	OfficialAccountLabel          string                `json:"officialAccountLabel"`
 	OfficialAuthUpdatedAt         string                `json:"officialAuthUpdatedAt"`
@@ -113,9 +120,20 @@ type relayProfile struct {
 	VLMModel                      string                `json:"vlmModel"`
 	VLMBaseURL                    string                `json:"vlmBaseUrl"`
 	UserAgent                     string                `json:"userAgent"`
+	Sub2APIEnabled                bool                  `json:"sub2apiEnabled"`
+	Sub2APIMultiplier             string                `json:"sub2apiMultiplier"`
 	ProxyEnabled                  bool                  `json:"proxyEnabled"`
 	ProxyURL                      string                `json:"proxyUrl"`
+	ModelRoutes                   []relayModelRoute     `json:"modelRoutes,omitempty"`
 }
+
+type relayModelRoute struct {
+	Model         string `json:"model"`
+	TargetRelayID string `json:"targetRelayId"`
+	TargetModel   string `json:"targetModel,omitempty"`
+}
+
+type dreamSkinThemeConfig map[string]any
 
 type aggregateRelayProfile struct {
 	ID       string                 `json:"id"`
@@ -309,28 +327,30 @@ type skillMCPBackupInfo struct {
 }
 
 type sessionChange struct {
-	Path              string
-	OriginalFirstLine string
-	NextFirstLine     string
-	Separator         string
-	ThreadID          string
-	CWD               string
-	Source            string
-	Title             string
-	FirstUserMessage  string
-	Preview           string
-	CreatedAt         int64
-	UpdatedAt         int64
-	CreatedAtMs       int64
-	UpdatedAtMs       int64
-	Archived          bool
-	CLIVersion        string
-	Model             string
-	ReasoningEffort   string
-	SandboxPolicy     string
-	ApprovalMode      string
-	HasUserEvent      bool
-	RewriteNeeded     bool
+	Path                     string
+	OriginalFirstLine        string
+	NextFirstLine            string
+	OriginalSessionMetaLines []string
+	NextSessionMetaLines     []string
+	Separator                string
+	ThreadID                 string
+	CWD                      string
+	Source                   string
+	Title                    string
+	FirstUserMessage         string
+	Preview                  string
+	CreatedAt                int64
+	UpdatedAt                int64
+	CreatedAtMs              int64
+	UpdatedAtMs              int64
+	Archived                 bool
+	CLIVersion               string
+	Model                    string
+	ReasoningEffort          string
+	SandboxPolicy            string
+	ApprovalMode             string
+	HasUserEvent             bool
+	RewriteNeeded            bool
 }
 
 type marketManifest struct {

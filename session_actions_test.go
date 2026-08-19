@@ -37,6 +37,9 @@ func TestMoveThreadWorkspaceUpdatesRolloutAndSQLite(t *testing.T) {
 	if got := stringFromAny(payload["cwd"]); got != "/new/project" {
 		t.Fatalf("rollout cwd mismatch: %q", got)
 	}
+	if !strings.Contains(string(data), `{"type":"user_message"}`) {
+		t.Fatal("moving a thread must preserve the rollout body after the metadata line")
+	}
 	if got := testThreadCWD(t, filepath.Join(home, ".codex", "state_5.sqlite"), sessionID); got != "/new/project" {
 		t.Fatalf("sqlite cwd mismatch: %q", got)
 	}
@@ -191,6 +194,17 @@ func TestDeleteThreadAndUndoRestoresRolloutAndSQLite(t *testing.T) {
 	}
 	if count := testThreadCount(t, dbPath, sessionID); count != 1 {
 		t.Fatalf("sqlite row should be restored, count=%d", count)
+	}
+}
+
+func TestSessionDeleteInFlightDeduplicatesLocalPrefix(t *testing.T) {
+	sessionID := "019a61dd-9748-7743-9ce9-92b8663a935b"
+	if !beginSessionDelete(sessionID) {
+		t.Fatal("first delete should acquire the in-flight key")
+	}
+	defer endSessionDelete(sessionID)
+	if beginSessionDelete("local:" + sessionID) {
+		t.Fatal("local: and bare session IDs should share the in-flight key")
 	}
 }
 

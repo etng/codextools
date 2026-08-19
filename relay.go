@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -710,7 +711,7 @@ func (s *server) applyRelayInjection(pure bool) commandResult {
 	payload["backupPath"] = nullableStringPtr(backupPath)
 	payload["configApplied"] = true
 	payload["pluginRepair"] = relayPluginRepairPayload(repairResult)
-	syncResult := runProviderSyncLocked(home)
+	syncResult := runProviderSyncLocked(home, "")
 	payload["providerSync"] = relayProviderSyncPayload(syncResult)
 	if repairResult.Status == "failed" || syncResult.Status == "failed" {
 		payload["maintenanceStatus"] = "failed"
@@ -840,7 +841,7 @@ func activeAggregateRelayProfile(settings backendSettings) (aggregateRelayProfil
 
 func activeRelayUsesProtocolProxy(settings backendSettings) bool {
 	active := activeRelayProfile(settings)
-	return active.Protocol == "chatCompletions" || active.RelayMode == "aggregate"
+	return active.Protocol == "chatCompletions" || active.RelayMode == "aggregate" || hasRelayModelRoutes(active)
 }
 
 func relayConfigForWrite(settings backendSettings, relay relayProfile) (string, error) {
@@ -863,9 +864,13 @@ func relayConfigForWrite(settings backendSettings, relay relayProfile) (string, 
 
 func relayConfigWithCommonAndLimits(settings backendSettings, relay relayProfile, configContents string) (string, error) {
 	profileConfig, _ := splitContextConfigSections(configContents)
+	existingCatalog := strings.TrimSpace(rootKeyString(profileConfig, "model_catalog_json"))
+	managedCatalog := isManagedRelayModelCatalog(existingCatalog)
 	if strings.TrimSpace(relay.ModelList) != "" || strings.TrimSpace(relay.ModelWindows) != "" {
-		profileConfig = upsertRootKey(profileConfig, "model_catalog_json", quoteToml("codex-models.json"))
-	} else {
+		if existingCatalog == "" || managedCatalog {
+			profileConfig = upsertRootKey(profileConfig, "model_catalog_json", quoteToml("codex-models.json"))
+		}
+	} else if managedCatalog {
 		profileConfig = removeRootKey(profileConfig, "model_catalog_json")
 	}
 	if model := strings.TrimSpace(relay.Model); model != "" {
@@ -885,7 +890,34 @@ func relayConfigWithCommonAndLimits(settings backendSettings, relay relayProfile
 		sanitizeCommonRelayConfig(settings.RelayCommonConfigContents),
 		filterCommonConfigForSelection(settings.RelayContextConfigContents, relay.ContextSelection),
 	)
-	return applyOfficialRealtimeConfig(joinConfigSectionsRootFirst(profileConfig, commonConfig), relay), nil
+	return applyOfficialRealtimeConfig(mergeRelayCommonConfig(profileConfig, commonConfig), relay), nil
+}
+
+func isManagedRelayModelCatalog(path string) bool {
+	name := strings.ToLower(strings.TrimSpace(path))
+	name = strings.ReplaceAll(name, `\`, "/")
+	if slash := strings.LastIndex(name, "/"); slash >= 0 {
+		name = name[slash+1:]
+	}
+	return name == "codex-models.json" || name == "cc-switch-model-catalog.json"
+}
+
+func mergeRelayCommonConfig(profileConfig, commonConfig string) string {
+	profileGoals, profileHasGoals := tableValues(profileConfig, "features")["goals"]
+	merged := joinConfigSectionsRootFirst(profileConfig, commonConfig)
+	commonFeatures := tableValues(commonConfig, "features")
+	featureKeys := make([]string, 0, len(commonFeatures))
+	for key := range commonFeatures {
+		featureKeys = append(featureKeys, key)
+	}
+	sort.Strings(featureKeys)
+	for _, key := range featureKeys {
+		merged = upsertTableKey(merged, "features", key, commonFeatures[key])
+	}
+	if profileHasGoals {
+		merged = upsertTableKey(merged, "features", "goals", profileGoals)
+	}
+	return normalizeDuplicateTomlTables(merged)
 }
 
 func applyOfficialRealtimeConfig(contents string, relay relayProfile) string {
@@ -1015,7 +1047,7 @@ func effectiveBaseURL(relay relayProfile) string {
 	if relay.Protocol == "chatCompletions" || relay.RelayMode == "aggregate" {
 		return protocolProxyBaseURL
 	}
-	if relay.Protocol == "responses" && (disablesImageGeneration(relay) || usesSeparateImageGenerationAPI(relay) || relayProfileUsesHTTPProxy(relay)) {
+	if relay.Protocol == "responses" && (disablesImageGeneration(relay) || usesSeparateImageGenerationAPI(relay) || relayProfileUsesHTTPProxy(relay) || hasRelayModelRoutes(relay)) {
 		return fmt.Sprintf("http://127.0.0.1:%d/v1", localRelayProxyPort)
 	}
 	return strings.TrimSpace(relay.BaseURL)
@@ -1105,7 +1137,7 @@ func (s *server) clearRelayInjection() commandResult {
 	payload["configApplied"] = true
 	repairResult := repairCodexConfig(home, codexConfigRepairOptions{Plugins: true, RefreshMarketplaces: true})
 	payload["pluginRepair"] = relayPluginRepairPayload(repairResult)
-	syncResult := runProviderSyncLocked(home)
+	syncResult := runProviderSyncLocked(home, "")
 	payload["providerSync"] = relayProviderSyncPayload(syncResult)
 	if repairResult.Status == "failed" || syncResult.Status == "failed" {
 		payload["maintenanceStatus"] = "failed"

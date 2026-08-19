@@ -88,14 +88,16 @@ func relayProfileModelCatalogValue(profile relayProfile) map[string]any {
 		status = "not_configured"
 	}
 	return map[string]any{
-		"status":         status,
-		"path":           filepath.Join(codexHomeDir(), "config.toml"),
-		"model":          model,
-		"default_model":  defaultModel,
-		"model_provider": strings.TrimSpace(profile.ID),
-		"provider_name":  providerName,
-		"models":         models,
-		"modelMetadata":  modelMetadataForNames(models),
+		"status":               status,
+		"path":                 filepath.Join(codexHomeDir(), "config.toml"),
+		"service_tier":         codexConfigServiceTier(codexHomeDir()),
+		"model":                model,
+		"default_model":        defaultModel,
+		"model_provider":       strings.TrimSpace(profile.ID),
+		"codex_model_provider": codexModelProviderForRelayProfile(codexHomeDir(), profile),
+		"provider_name":        providerName,
+		"models":               models,
+		"modelMetadata":        modelMetadataForNames(models),
 		"sources": []any{map[string]any{
 			"id":            "relay-profile:" + strings.TrimSpace(profile.ID),
 			"type":          "relay_profile_model_list",
@@ -137,17 +139,26 @@ func relayProfileRemoteModelCatalogValue(ctx context.Context, profile relayProfi
 		status = "failed"
 	}
 	return map[string]any{
-		"status":         status,
-		"path":           filepath.Join(codexHomeDir(), "config.toml"),
-		"model":          model,
-		"default_model":  defaultModel,
-		"model_provider": strings.TrimSpace(profile.ID),
-		"provider_name":  displayRelayName(profile),
-		"models":         models,
-		"modelMetadata":  modelMetadataForNames(models),
-		"sources":        []any{sourceStatus},
-		"responses_api":  responsesAPIStatus("unknown", "", ""),
+		"status":               status,
+		"path":                 filepath.Join(codexHomeDir(), "config.toml"),
+		"service_tier":         codexConfigServiceTier(codexHomeDir()),
+		"model":                model,
+		"default_model":        defaultModel,
+		"model_provider":       strings.TrimSpace(profile.ID),
+		"codex_model_provider": codexModelProviderForRelayProfile(codexHomeDir(), profile),
+		"provider_name":        displayRelayName(profile),
+		"models":               models,
+		"modelMetadata":        modelMetadataForNames(models),
+		"sources":              []any{sourceStatus},
+		"responses_api":        responsesAPIStatus("unknown", "", ""),
 	}
+}
+
+func codexModelProviderForRelayProfile(home string, profile relayProfile) string {
+	if provider := strings.TrimSpace(rootKeyString(profile.ConfigContents, "model_provider")); provider != "" {
+		return provider
+	}
+	return strings.TrimSpace(rootKeyString(readFile(filepath.Join(home, "config.toml")), "model_provider"))
 }
 
 func codexModelCatalogFromHome(ctx context.Context, home string) map[string]any {
@@ -163,6 +174,7 @@ func codexModelCatalogFromHome(ctx context.Context, home string) map[string]any 
 				"status":         "failed",
 				"path":           configPath,
 				"message":        err.Error(),
+				"service_tier":   nil,
 				"model":          "",
 				"model_provider": "",
 				"provider_name":  "",
@@ -226,6 +238,7 @@ func codexModelCatalogFromHome(ctx context.Context, home string) map[string]any 
 	return map[string]any{
 		"status":         status,
 		"path":           configPath,
+		"service_tier":   nullableString(strings.TrimSpace(effective["service_tier"])),
 		"model":          model,
 		"default_model":  defaultModel,
 		"model_provider": modelProvider,
@@ -235,6 +248,14 @@ func codexModelCatalogFromHome(ctx context.Context, home string) map[string]any 
 		"sources":        sourceStatuses,
 		"responses_api":  preferredResponsesAPIStatus(sourceStatuses),
 	}
+}
+
+func codexConfigServiceTier(home string) any {
+	contents, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		return nil
+	}
+	return nullableString(strings.TrimSpace(effectiveCodexRootValues(string(contents))["service_tier"]))
 }
 
 func splitModelList(value string) []string {

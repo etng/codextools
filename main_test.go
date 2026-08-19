@@ -352,6 +352,31 @@ func TestImageRelayCLIEnvironmentDisabledForNormalRelay(t *testing.T) {
 	}
 }
 
+func TestCodexLaunchEnvironmentDoesNotInjectImageRelayIntoDesktopApp(t *testing.T) {
+	settings := defaultSettings()
+	settings.RelayProfiles = []relayProfile{{
+		ID:                            "image-relay",
+		Name:                          "Image relay",
+		RelayMode:                     "pureApi",
+		Protocol:                      "responses",
+		BaseURL:                       "https://text.example.test/v1",
+		APIKey:                        "text-secret",
+		ImageGenerationEnabled:        true,
+		ImageGenerationUseSeparateAPI: true,
+		ImageGenerationBaseURL:        "https://image.example.test/v1",
+		ImageGenerationAPIKey:         "image-secret",
+	}}
+	settings.ActiveRelayID = "image-relay"
+
+	environment := codexLaunchEnvironment(settings)
+	joined := strings.Join(environment, "\n")
+	for _, forbidden := range []string{"OPENAI_API_KEY=", "OPENAI_BASE_URL=", "image-secret", "image.example.test"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("desktop app launch environment must not contain %q: %#v", forbidden, environment)
+		}
+	}
+}
+
 func TestMergeLaunchEnvironmentReplacesExistingOpenAIValues(t *testing.T) {
 	base := []string{"PATH=/usr/bin", "OPENAI_API_KEY=real-secret", "OPENAI_BASE_URL=https://api.openai.com/v1", "OTHER=value"}
 	overrides := []string{"OPENAI_API_KEY=" + imageRelayCLIAPIKey, "OPENAI_BASE_URL=http://127.0.0.1:57323/v1"}
@@ -542,10 +567,9 @@ func TestNormalizeCodexAppPathRejectsCodexToolsMacApps(t *testing.T) {
 	}
 }
 
-func TestRendererInjectionUsesVersionGatedMarketplaceAndAutoExpandStrategy(t *testing.T) {
+func TestRendererInjectionUsesVersionGatedMarketplaceStrategy(t *testing.T) {
 	for _, required := range []string{
 		`pluginMarketplaceUnlock`,
-		`pluginAutoExpand`,
 		`pluginPatchDisabledInRelayMode`,
 		`activeRelayModeSupportsOfficialSites`,
 		`activeRelayMode: "official"`,
@@ -572,8 +596,6 @@ func TestRendererInjectionUsesVersionGatedMarketplaceAndAutoExpandStrategy(t *te
 		`mergeLocalPluginMarketplaces`,
 		`__CODEX_PLUS_PLUGIN_MARKETPLACES__`,
 		`plugin_marketplace_local_merged`,
-		`plugin_auto_expand_finished`,
-		`schedulePluginAutoExpand`,
 		`threadIdBadge`,
 		`showSaveFilePicker`,
 		`modelJsonResponseLooksPatchable`,
@@ -584,6 +606,8 @@ func TestRendererInjectionUsesVersionGatedMarketplaceAndAutoExpandStrategy(t *te
 		}
 	}
 	for _, forbidden := range []string{
+		`data-codex-plus-setting="pluginAutoExpand"`,
+		`data-codex-plus-setting="conversationTimeline"`,
 		`forcePluginInstall`,
 		`unblockPluginInstallButtons`,
 		`强制安装`,
@@ -645,6 +669,19 @@ func TestRendererInjectionExtendsThreadSortKeysTimeout(t *testing.T) {
 	expected := `postJson("/thread-sort-keys", { sessions: refs }, { timeoutMs: 15000 })`
 	if !strings.Contains(rendererInjectScript, expected) {
 		t.Fatalf("thread sort key bridge call should have an extended timeout; missing %q", expected)
+	}
+}
+
+func TestRendererInjectionUsesDeleteSpecificTimeoutAndDeduplication(t *testing.T) {
+	for _, expected := range []string{
+		`postJson("/delete", ref, { timeoutMs: 60000 })`,
+		`status === "delete_in_progress"`,
+		`function setDeleteButtonBusy(button, busy)`,
+		`删除仍在处理中，请勿重复点击`,
+	} {
+		if !strings.Contains(rendererInjectScript, expected) {
+			t.Fatalf("renderer injection should protect slow delete requests; missing %q", expected)
+		}
 	}
 }
 
@@ -1010,11 +1047,13 @@ func TestSettingsDefaultsIncludeCodexPlusV1224Fields(t *testing.T) {
 		"codexAppForceChineseLocale",
 		"codexAppNativeMenuLocalization",
 		"codexAppPluginMarketplaceUnlock",
-		"codexAppPluginAutoExpand",
 	} {
 		if !boolFromAny(value[key]) {
 			t.Fatalf("bridge settings should default %s to true: %#v", key, value)
 		}
+	}
+	if boolFromAny(value["codexAppPluginAutoExpand"]) {
+		t.Fatalf("deprecated plugin auto-expand should default false: %#v", value)
 	}
 	if boolFromAny(value["codexAppPasteFix"]) {
 		t.Fatalf("paste fix should default false: %#v", value)

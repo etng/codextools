@@ -1,19 +1,27 @@
 package main
 
 import (
+	"bufio"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const sessionDeleteBackupVersion = 2
+
+var sessionDeleteState = struct {
+	sync.Mutex
+	inFlight map[string]struct{}
+}{inFlight: map[string]struct{}{}}
 
 type sessionRolloutFile struct {
 	Path        string
@@ -75,7 +83,7 @@ type sessionMarkdownMessage struct {
 
 func isSessionDataRoute(path string) bool {
 	switch path {
-	case "/delete", "/undo", "/archived-thread", "/move-thread-workspace", "/move-thread-projectless", "/export-markdown", "/thread-sort-key", "/thread-sort-keys":
+	case "/delete", "/undo", "/archived-thread", "/move-thread-workspace", "/move-thread-projectless", "/export-markdown", "/thread-usage-history", "/thread-sort-key", "/thread-sort-keys":
 		return true
 	default:
 		return false
@@ -99,6 +107,8 @@ func handleSessionDataRoute(path string, payload map[string]any) map[string]any 
 		return moveThreadProjectlessDataRoute(payload)
 	case "/export-markdown":
 		return exportMarkdownDataRoute(payload)
+	case "/thread-usage-history":
+		return threadUsageHistoryDataRoute(payload)
 	case "/thread-sort-key":
 		return threadSortKeyDataRoute(payload)
 	case "/thread-sort-keys":
@@ -108,11 +118,122 @@ func handleSessionDataRoute(path string, payload map[string]any) map[string]any 
 	}
 }
 
+func threadUsageHistoryDataRoute(payload map[string]any) map[string]any {
+	sessionID := strings.TrimSpace(stringFromAny(payload["session_id"]))
+	if sessionID == "" {
+		return map[string]any{"status": "failed", "message": "读取用量历史失败：未找到会话 ID", "history": []any{}}
+	}
+	lookup, err := lookupSession(codexHomeDir(), sessionID, "", false)
+	if err != nil {
+		return map[string]any{"status": "failed", "session_id": sessionID, "message": "读取用量历史失败：" + err.Error(), "history": []any{}}
+	}
+	rolloutPath := ""
+	if len(lookup.Files) > 0 {
+		rolloutPath = lookup.Files[0].Path
+	}
+	if rolloutPath == "" {
+		for _, row := range lookup.DBRows {
+			if candidate := strings.TrimSpace(stringFromAny(row.Values["rollout_path"])); candidate != "" {
+				rolloutPath = candidate
+				break
+			}
+		}
+	}
+	if rolloutPath == "" || !fileExists(rolloutPath) {
+		return map[string]any{"status": "failed", "session_id": lookup.canonicalOr(sessionID), "message": "读取用量历史失败：会话 rollout 文件不存在", "history": []any{}}
+	}
+	history, err := readRolloutUsageHistory(rolloutPath, lookup.canonicalOr(sessionID))
+	if err != nil {
+		return map[string]any{"status": "failed", "session_id": lookup.canonicalOr(sessionID), "message": "读取用量历史失败：" + err.Error(), "history": []any{}}
+	}
+	return map[string]any{
+		"status":       "ok",
+		"session_id":   lookup.canonicalOr(sessionID),
+		"rollout_path": rolloutPath,
+		"history":      history,
+	}
+}
+
+func readRolloutUsageHistory(path, threadID string) ([]any, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	history := []any{}
+	currentTurnID := ""
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		var record map[string]any
+		if json.Unmarshal(scanner.Bytes(), &record) != nil {
+			continue
+		}
+		payload, _ := record["payload"].(map[string]any)
+		switch strings.TrimSpace(stringFromAny(record["type"])) {
+		case "turn_context":
+			currentTurnID = strings.TrimSpace(stringFromAny(payload["turn_id"]))
+		case "event_msg":
+			if strings.TrimSpace(stringFromAny(payload["type"])) != "token_count" {
+				continue
+			}
+			info, _ := payload["info"].(map[string]any)
+			last, _ := info["last_token_usage"].(map[string]any)
+			total, _ := info["total_token_usage"].(map[string]any)
+			inputTokens := int64FromFlexible(last["input_tokens"])
+			outputTokens := int64FromFlexible(last["output_tokens"])
+			totalTokens := int64FromFlexible(last["total_tokens"])
+			if totalTokens == 0 {
+				totalTokens = int64FromFlexible(total["total_tokens"])
+			}
+			cachedTokens := int64FromFlexible(last["cached_input_tokens"])
+			contextUsed := int64FromFlexible(total["total_tokens"])
+			if contextUsed == 0 {
+				contextUsed = totalTokens
+			}
+			if inputTokens <= 0 && outputTokens <= 0 && totalTokens <= 0 && contextUsed <= 0 {
+				continue
+			}
+			history = append(history, map[string]any{
+				"source":          "rollout-history",
+				"conversation_id": "local:" + strings.TrimPrefix(threadID, "local:"),
+				"turn_id":         currentTurnID,
+				"observed_at":     stringFromAny(record["timestamp"]),
+				"usage": map[string]any{
+					"inputTokens":         inputTokens,
+					"outputTokens":        outputTokens,
+					"totalTokens":         totalTokens,
+					"cachedTokens":        cachedTokens,
+					"cacheReadTokens":     int64(0),
+					"cacheCreationTokens": int64(0),
+					"contextUsed":         contextUsed,
+					"contextLimit":        int64FromFlexible(info["model_context_window"]),
+					"hasBreakdown":        inputTokens > 0 || outputTokens > 0 || cachedTokens > 0,
+				},
+			})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return history, nil
+}
+
 func deleteSessionDataRoute(payload map[string]any) map[string]any {
 	sessionID := strings.TrimSpace(stringFromAny(payload["session_id"]))
 	if sessionID == "" {
 		return map[string]any{"status": "failed", "message": "删除失败：未找到会话 ID"}
 	}
+	deleteKey := bareSessionID(sessionID)
+	if !beginSessionDelete(deleteKey) {
+		appendDiagnosticLog("session_delete.in_progress", map[string]any{"session_id_present": true})
+		return map[string]any{
+			"status":  "delete_in_progress",
+			"code":    "delete_in_progress",
+			"message": "该会话正在删除，请稍候，不要重复点击。",
+		}
+	}
+	defer endSessionDelete(deleteKey)
 	home := codexHomeDir()
 	lookup, err := lookupSession(home, sessionID, "", false)
 	if err != nil {
@@ -137,6 +258,30 @@ func deleteSessionDataRoute(payload map[string]any) map[string]any {
 		"message":    "已删除本地会话。",
 		"undo_token": undoToken,
 	}
+}
+
+func beginSessionDelete(sessionID string) bool {
+	sessionID = strings.TrimSpace(bareSessionID(sessionID))
+	if sessionID == "" {
+		return true
+	}
+	sessionDeleteState.Lock()
+	defer sessionDeleteState.Unlock()
+	if _, exists := sessionDeleteState.inFlight[sessionID]; exists {
+		return false
+	}
+	sessionDeleteState.inFlight[sessionID] = struct{}{}
+	return true
+}
+
+func endSessionDelete(sessionID string) {
+	sessionID = strings.TrimSpace(bareSessionID(sessionID))
+	if sessionID == "" {
+		return
+	}
+	sessionDeleteState.Lock()
+	delete(sessionDeleteState.inFlight, sessionID)
+	sessionDeleteState.Unlock()
 }
 
 func undoSessionDataRoute(payload map[string]any) map[string]any {
@@ -573,11 +718,17 @@ func normalizeRolloutPath(home, value string) string {
 }
 
 func readRolloutFile(path string) (sessionRolloutFile, error) {
-	data, err := os.ReadFile(path)
+	fileHandle, err := os.Open(path)
 	if err != nil {
 		return sessionRolloutFile{}, err
 	}
-	firstLine, separator := splitFirstLine(string(data))
+	defer fileHandle.Close()
+	reader := bufio.NewReaderSize(fileHandle, 64*1024)
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return sessionRolloutFile{}, err
+	}
+	firstLine, separator := splitFirstLine(line)
 	var record map[string]any
 	if err := json.Unmarshal([]byte(firstLine), &record); err != nil {
 		return sessionRolloutFile{}, err
@@ -606,40 +757,46 @@ func readRolloutFile(path string) (sessionRolloutFile, error) {
 }
 
 func rolloutFileMatchesAnyID(path string, ids map[string]bool) bool {
-	data, err := os.ReadFile(path)
+	fileHandle, err := os.Open(path)
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var record map[string]any
-		if json.Unmarshal([]byte(line), &record) != nil {
-			continue
-		}
-		payload, _ := record["payload"].(map[string]any)
-		if payload == nil {
-			payload = record
-		}
-		candidates := []string{
-			stringFromAny(payload["id"]),
-			stringFromAny(payload["session_id"]),
-			stringFromAny(payload["thread_id"]),
-			stringFromAny(record["id"]),
-			stringFromAny(record["session_id"]),
-			stringFromAny(record["thread_id"]),
-		}
-		if stringFromAny(record["type"]) != "session_meta" && stringFromAny(payload["type"]) != "session_meta" {
-			candidates = candidates[:1]
-		}
-		for _, candidate := range candidates {
-			for _, variant := range sessionIDVariants(candidate) {
-				if ids[variant] || ids[bareSessionID(variant)] {
-					return true
+	defer fileHandle.Close()
+	reader := bufio.NewReaderSize(fileHandle, 64*1024)
+	for {
+		line, readErr := reader.ReadString('\n')
+		if line = strings.TrimSpace(line); line != "" {
+			var record map[string]any
+			if json.Unmarshal([]byte(line), &record) == nil {
+				payload, _ := record["payload"].(map[string]any)
+				if payload == nil {
+					payload = record
+				}
+				candidates := []string{
+					stringFromAny(payload["id"]),
+					stringFromAny(payload["session_id"]),
+					stringFromAny(payload["thread_id"]),
+					stringFromAny(record["id"]),
+					stringFromAny(record["session_id"]),
+					stringFromAny(record["thread_id"]),
+				}
+				if stringFromAny(record["type"]) != "session_meta" && stringFromAny(payload["type"]) != "session_meta" {
+					candidates = candidates[:1]
+				}
+				for _, candidate := range candidates {
+					for _, variant := range sessionIDVariants(candidate) {
+						if ids[variant] || ids[bareSessionID(variant)] {
+							return true
+						}
+					}
 				}
 			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return false
 		}
 	}
 	return false
@@ -673,11 +830,17 @@ func findRolloutFiles(home string, ids []string) ([]sessionRolloutFile, error) {
 			if !strings.HasPrefix(name, "rollout-") || !strings.HasSuffix(name, ".jsonl") {
 				return nil
 			}
+			// Codex rollout names normally contain the UUID. Avoid reading every
+			// historical transcript just to find one session.
+			nameMatches := rolloutFileNameMatchesAnyID(name, idSet)
+			if !nameMatches && len(idSet) == 0 {
+				return nil
+			}
 			file, err := readRolloutFile(path)
 			if err != nil {
 				return nil
 			}
-			if idSet[file.SessionID] || idSet[bareSessionID(file.SessionID)] || rolloutFileMatchesAnyID(path, idSet) {
+			if nameMatches || idSet[file.SessionID] || idSet[bareSessionID(file.SessionID)] {
 				files = append(files, file)
 			}
 			return nil
@@ -687,6 +850,19 @@ func findRolloutFiles(home string, ids []string) ([]sessionRolloutFile, error) {
 		}
 	}
 	return files, nil
+}
+
+func rolloutFileNameMatchesAnyID(name string, ids map[string]bool) bool {
+	for id := range ids {
+		id = bareSessionID(id)
+		if len(id) < 8 {
+			continue
+		}
+		if strings.Contains(name, id) {
+			return true
+		}
+	}
+	return false
 }
 
 func rewriteRolloutWorkspace(file sessionRolloutFile, targetCWD string) error {
@@ -703,7 +879,50 @@ func rewriteRolloutWorkspace(file sessionRolloutFile, targetCWD string) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(file.Path, append(nextFirstLine, []byte(file.Separator)...))
+	source, err := os.Open(file.Path)
+	if err != nil {
+		return err
+	}
+	reader := bufio.NewReaderSize(source, 64*1024)
+	if _, err := reader.ReadString('\n'); err != nil && !errors.Is(err, io.EOF) {
+		_ = source.Close()
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(file.Path), ".codextools-rollout-*")
+	if err != nil {
+		_ = source.Close()
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if info, statErr := source.Stat(); statErr == nil {
+		_ = temp.Chmod(info.Mode().Perm())
+	}
+	if _, err := temp.Write(nextFirstLine); err != nil {
+		_ = temp.Close()
+		_ = source.Close()
+		return err
+	}
+	if file.Separator != "" {
+		if _, err := temp.WriteString("\n"); err != nil {
+			_ = temp.Close()
+			_ = source.Close()
+			return err
+		}
+	}
+	if _, err := io.Copy(temp, reader); err != nil {
+		_ = temp.Close()
+		_ = source.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		_ = source.Close()
+		return err
+	}
+	if err := source.Close(); err != nil {
+		return err
+	}
+	return replaceFile(tempPath, file.Path)
 }
 
 func buildSessionMarkdownExport(lookup sessionLookupResult) (sessionMarkdownExport, error) {

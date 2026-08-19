@@ -39,8 +39,13 @@ const (
 	providerSyncUnknownOwnerLockTTL = 2 * time.Minute
 )
 
-func (s *server) syncProvidersNow() commandResult {
-	result := runProviderSync(codexHomeDir())
+func (s *server) syncProvidersNow(argSets ...map[string]any) commandResult {
+	args := map[string]any{}
+	if len(argSets) > 0 && argSets[0] != nil {
+		args = argSets[0]
+	}
+	targetProvider := strings.TrimSpace(firstNonEmpty(stringArg(args, "targetProvider"), stringArg(mapArg(args, "request"), "targetProvider")))
+	result := runProviderSyncTarget(codexHomeDir(), targetProvider)
 	status := "ok"
 	if result.Status == "skipped" {
 		status = "not_checked"
@@ -711,16 +716,20 @@ func upsertTableKey(contents, table, key, value string) string {
 }
 
 func runProviderSync(home string) providerSyncResult {
-	return runProviderSyncWithLock(home, true)
+	return runProviderSyncWithLock(home, true, "")
+}
+
+func runProviderSyncTarget(home, targetProvider string) providerSyncResult {
+	return runProviderSyncWithLock(home, true, targetProvider)
 }
 
 // runProviderSyncWithHeldLauncherGuard is used by the managed launcher, which
 // already holds the launcher single-instance guard for its full lifetime.
 func runProviderSyncWithHeldLauncherGuard(home string) providerSyncResult {
-	return runProviderSyncWithLock(home, false)
+	return runProviderSyncWithLock(home, false, "")
 }
 
-func runProviderSyncWithLock(home string, acquireLauncherGuard bool) providerSyncResult {
+func runProviderSyncWithLock(home string, acquireLauncherGuard bool, targetProvider string) providerSyncResult {
 	if !isDir(home) {
 		return providerSyncResult{Status: "skipped", Message: "Codex home not found: " + home, TargetProvider: "openai"}
 	}
@@ -736,14 +745,19 @@ func runProviderSyncWithLock(home string, acquireLauncherGuard bool) providerSyn
 		}
 		defer releaseLauncherGuard()
 	}
-	return runProviderSyncLocked(home)
+	return runProviderSyncLocked(home, targetProvider)
 }
 
 // runProviderSyncLocked synchronizes history while the caller holds the
 // provider-sync lock. It reads the provider only after that lock is held so a
 // mode switch cannot change config.toml between provider selection and sync.
-func runProviderSyncLocked(home string) providerSyncResult {
-	targetProvider := readCurrentProvider(filepath.Join(home, "config.toml"))
+func runProviderSyncLocked(home, explicitTargetProvider string) providerSyncResult {
+	targetProvider := strings.TrimSpace(explicitTargetProvider)
+	if targetProvider == "" {
+		targetProvider = readCurrentProvider(filepath.Join(home, "config.toml"))
+	} else if !validProviderSyncTargetID(targetProvider) {
+		return providerSyncResult{Status: "skipped", Message: fmt.Sprintf("Invalid provider sync target: %q", targetProvider), TargetProvider: targetProvider}
+	}
 	changes, err := collectSessionChanges(home, targetProvider)
 	if err != nil {
 		return providerSyncResult{Status: "skipped", Message: "Provider sync skipped: " + err.Error(), TargetProvider: targetProvider}
@@ -1061,37 +1075,19 @@ func collectSessionChanges(home, targetProvider string) ([]sessionChange, error)
 			return nil, err
 		}
 		text := string(textBytes)
-		firstLine, separator := splitFirstLine(text)
-		if strings.TrimSpace(firstLine) == "" {
-			continue
+		record, payload, originalMetaLines, nextMetaLines, rewriteNeeded, err := providerSyncSessionMetaRewrites(text, targetProvider)
+		if err != nil {
+			return nil, err
 		}
-		var record map[string]any
-		decoder := json.NewDecoder(strings.NewReader(firstLine))
-		decoder.UseNumber()
-		if decoder.Decode(&record) != nil {
-			continue
-		}
-		payload, ok := record["payload"].(map[string]any)
-		if !ok {
+		if len(originalMetaLines) == 0 {
 			continue
 		}
 		threadID := stringFromAny(payload["id"])
 		cwd := toDesktopWorkspacePath(stringFromAny(payload["cwd"]))
-		rewriteNeeded := stringFromAny(payload["model_provider"]) != targetProvider
-		if rewriteNeeded {
-			payload["model_provider"] = targetProvider
-		}
-		nextFirstLine := firstLine
-		if rewriteNeeded {
-			data, err := json.Marshal(record)
-			if err != nil {
-				return nil, err
-			}
-			nextFirstLine = string(data)
-		}
 		meta := sessionChangeMetadata(path, text, record, payload)
 		changes = append(changes, sessionChange{
-			Path: path, OriginalFirstLine: firstLine, NextFirstLine: nextFirstLine, Separator: separator,
+			Path: path, OriginalFirstLine: originalMetaLines[0], NextFirstLine: nextMetaLines[0],
+			OriginalSessionMetaLines: originalMetaLines, NextSessionMetaLines: nextMetaLines,
 			ThreadID: threadID, CWD: firstString(cwd, meta.CWD), Source: meta.Source, Title: meta.Title, FirstUserMessage: meta.FirstUserMessage, Preview: meta.Preview,
 			CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt, CreatedAtMs: meta.CreatedAtMs, UpdatedAtMs: meta.UpdatedAtMs,
 			Archived: meta.Archived, CLIVersion: meta.CLIVersion, Model: meta.Model, ReasoningEffort: meta.ReasoningEffort,
@@ -1100,6 +1096,48 @@ func collectSessionChanges(home, targetProvider string) ([]sessionChange, error)
 		})
 	}
 	return changes, nil
+}
+
+func providerSyncSessionMetaRewrites(text, targetProvider string) (map[string]any, map[string]any, []string, []string, bool, error) {
+	var firstRecord map[string]any
+	var firstPayload map[string]any
+	originals := []string{}
+	replacements := []string{}
+	rewriteNeeded := false
+	for _, segment := range strings.SplitAfter(text, "\n") {
+		line := strings.TrimSuffix(segment, "\n")
+		body, _ := providerSyncFirstLineParts(line)
+		if strings.TrimSpace(body) == "" {
+			continue
+		}
+		var record map[string]any
+		decoder := json.NewDecoder(strings.NewReader(body))
+		decoder.UseNumber()
+		if decoder.Decode(&record) != nil || stringFromAny(record["type"]) != "session_meta" {
+			continue
+		}
+		payload, ok := record["payload"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if firstRecord == nil {
+			firstRecord = record
+			firstPayload = payload
+		}
+		originals = append(originals, body)
+		nextLine := body
+		if stringFromAny(payload["model_provider"]) != targetProvider {
+			payload["model_provider"] = targetProvider
+			data, err := json.Marshal(record)
+			if err != nil {
+				return nil, nil, nil, nil, false, err
+			}
+			nextLine = string(data)
+			rewriteNeeded = true
+		}
+		replacements = append(replacements, nextLine)
+	}
+	return firstRecord, firstPayload, originals, replacements, rewriteNeeded, nil
 }
 
 func sessionChangeMetadata(path, text string, record, payload map[string]any) sessionChange {
@@ -1339,11 +1377,12 @@ func createProviderSyncBackup(home, targetProvider string, changes []sessionChan
 			return fail(fmt.Errorf("读取会话备份状态 %s 失败：%w", backupPath, err))
 		}
 		manifest = append(manifest, map[string]any{
-			"path":              change.Path,
-			"backupPath":        filepath.ToSlash(backupRelative),
-			"originalFirstLine": change.OriginalFirstLine,
-			"size":              info.Size(),
-			"mode":              uint32(info.Mode().Perm()),
+			"path":                     change.Path,
+			"backupPath":               filepath.ToSlash(backupRelative),
+			"originalFirstLine":        change.OriginalFirstLine,
+			"originalSessionMetaLines": change.OriginalSessionMetaLines,
+			"size":                     info.Size(),
+			"mode":                     uint32(info.Mode().Perm()),
 		})
 	}
 	if err := atomicWriteJSON(filepath.Join(backupDir, "session-meta-backup.json"), manifest); err != nil {
@@ -1498,14 +1537,23 @@ func writeProviderSyncAtomicFile(path string, contents []byte, mode os.FileMode)
 }
 
 func copyFileIfExists(source, target string) error {
-	data, err := os.ReadFile(source)
+	input, err := os.Open(source)
 	if err != nil {
 		return err
 	}
+	defer input.Close()
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(target, data, 0o644)
+	output, err := os.Create(target)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(output, input); err != nil {
+		_ = output.Close()
+		return err
+	}
+	return output.Close()
 }
 
 type providerSyncMutationError struct {
@@ -1531,7 +1579,7 @@ func (e *providerSyncMutationError) Unwrap() error {
 func applySessionChanges(changes []sessionChange) error {
 	applied := make([]sessionChange, 0, len(changes))
 	for _, change := range changes {
-		if err := rewriteProviderSyncSessionFirstLine(change.Path, change.OriginalFirstLine, change.NextFirstLine); err != nil {
+		if err := rewriteProviderSyncSessionChange(change, false); err != nil {
 			rollbackErr := restoreSessionChanges(applied)
 			return &providerSyncMutationError{
 				OperationErr: fmt.Errorf("更新会话文件 %s 失败：%w", change.Path, err),
@@ -1548,11 +1596,125 @@ func restoreSessionChanges(changes []sessionChange) error {
 	var rollbackErrors []error
 	for index := len(changes) - 1; index >= 0; index-- {
 		change := changes[index]
-		if err := rewriteProviderSyncSessionFirstLine(change.Path, change.NextFirstLine, change.OriginalFirstLine); err != nil {
+		if err := rewriteProviderSyncSessionChange(change, true); err != nil {
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("%s: %w", change.Path, err))
 		}
 	}
 	return errors.Join(rollbackErrors...)
+}
+
+func rewriteProviderSyncSessionChange(change sessionChange, restore bool) error {
+	expected := change.OriginalSessionMetaLines
+	replacements := change.NextSessionMetaLines
+	if restore {
+		expected, replacements = replacements, expected
+	}
+	if len(expected) == 0 || len(expected) != len(replacements) {
+		if restore {
+			return rewriteProviderSyncSessionFirstLine(change.Path, change.NextFirstLine, change.OriginalFirstLine)
+		}
+		return rewriteProviderSyncSessionFirstLine(change.Path, change.OriginalFirstLine, change.NextFirstLine)
+	}
+	return rewriteProviderSyncSessionMetaLines(change.Path, expected, replacements)
+}
+
+func rewriteProviderSyncSessionMetaLines(path string, expectedLines, replacementLines []string) error {
+	input, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	inputClosed := false
+	defer func() {
+		if !inputClosed {
+			_ = input.Close()
+		}
+	}()
+	before, err := input.Stat()
+	if err != nil {
+		return err
+	}
+	contents, err := io.ReadAll(input)
+	if err != nil {
+		return err
+	}
+	after, err := input.Stat()
+	if err != nil {
+		return err
+	}
+	if after.Size() != before.Size() || after.ModTime().UnixNano() != before.ModTime().UnixNano() {
+		return fmt.Errorf("%s 在读取期间发生变化", path)
+	}
+	segments := strings.SplitAfter(string(contents), "\n")
+	metaSegmentIndexes := make([]int, 0, len(expectedLines))
+	for index, segment := range segments {
+		line := strings.TrimSuffix(segment, "\n")
+		body, _ := providerSyncFirstLineParts(line)
+		var record map[string]any
+		if json.Unmarshal([]byte(body), &record) == nil && stringFromAny(record["type"]) == "session_meta" {
+			metaSegmentIndexes = append(metaSegmentIndexes, index)
+		}
+	}
+	if len(metaSegmentIndexes) < len(expectedLines) {
+		return fmt.Errorf("%s 的会话元数据数量已变化", path)
+	}
+	for rewriteIndex := range expectedLines {
+		segmentIndex := metaSegmentIndexes[rewriteIndex]
+		segment := segments[segmentIndex]
+		hasNewline := strings.HasSuffix(segment, "\n")
+		line := strings.TrimSuffix(segment, "\n")
+		body, suffix := providerSyncFirstLineParts(line)
+		expectedBody, _ := providerSyncFirstLineParts(expectedLines[rewriteIndex])
+		replacementBody, _ := providerSyncFirstLineParts(replacementLines[rewriteIndex])
+		if body != expectedBody && body != replacementBody {
+			return fmt.Errorf("%s 的第 %d 条会话元数据已变化", path, rewriteIndex+1)
+		}
+		if body == expectedBody && expectedBody != replacementBody {
+			line = replacementBody + suffix
+			if hasNewline {
+				line += "\n"
+			}
+			segments[segmentIndex] = line
+		}
+	}
+	nextContents := strings.Join(segments, "")
+	if nextContents == string(contents) {
+		return nil
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".provider-sync-session-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if _, err := io.WriteString(temp, nextContents); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := prepareConversationHistoryTemp(temp, before.Mode()); err != nil {
+		return err
+	}
+	pathInfo, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(before, pathInfo) || pathInfo.Size() != before.Size() || pathInfo.ModTime().UnixNano() != before.ModTime().UnixNano() {
+		return fmt.Errorf("%s 在原子替换前发生变化", path)
+	}
+	if err := ensureProviderSyncWritersStopped(); err != nil {
+		return err
+	}
+	finalInfo, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(before, finalInfo) || finalInfo.Size() != before.Size() || finalInfo.ModTime().UnixNano() != before.ModTime().UnixNano() {
+		return fmt.Errorf("%s 在最终原子替换前发生变化", path)
+	}
+	if err := input.Close(); err != nil {
+		return err
+	}
+	inputClosed = true
+	return replaceFile(tempPath, path)
 }
 
 func rewriteProviderSyncSessionFirstLine(path, expectedFirstLine, replacementFirstLine string) error {

@@ -19,7 +19,16 @@ import (
 )
 
 func (r relayProfile) needsLocalRelayProxy() bool {
-	return r.Protocol == "responses" && (disablesImageGeneration(r) || usesSeparateImageGenerationAPI(r))
+	return r.Protocol == "responses" && (disablesImageGeneration(r) || usesSeparateImageGenerationAPI(r) || hasRelayModelRoutes(r))
+}
+
+func hasRelayModelRoutes(profile relayProfile) bool {
+	for _, route := range profile.ModelRoutes {
+		if strings.TrimSpace(route.Model) != "" && strings.TrimSpace(route.TargetRelayID) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *launcherRuntime) runtimeSettingsSnapshot() backendSettings {
@@ -94,11 +103,37 @@ func (r *launcherRuntime) handleRelayProxyHTTP(w http.ResponseWriter, req *http.
 		return
 	}
 	if websocket.IsWebSocketUpgrade(req) {
+		if isRemoteControlHTTPRequest(req) {
+			appendDiagnosticLog("remote_control.relay_bypass", map[string]any{
+				"method": req.Method,
+				"path":   req.URL.Path,
+				"mode":   activeRelayProfile(r.relaySettingsForRequest()).RelayMode,
+			})
+			writeHelperJSON(w, http.StatusMisdirectedRequest, map[string]any{
+				"status":  "failed",
+				"code":    "official_remote_control_passthrough",
+				"message": "远程控制必须连接 ChatGPT 官方服务，已阻止进入第三方模型中转。请重启 ChatGPT 后重试。",
+			})
+			return
+		}
 		if isRealtimeProxyPath(req.URL.Path) {
 			r.forwardOfficialRealtimeWebSocket(w, req)
 			return
 		}
 		writeHelperJSON(w, http.StatusNotFound, map[string]any{"status": "failed", "message": "未知 WebSocket 路径"})
+		return
+	}
+	if isRemoteControlHTTPRequest(req) {
+		appendDiagnosticLog("remote_control.relay_bypass", map[string]any{
+			"method": req.Method,
+			"path":   req.URL.Path,
+			"mode":   activeRelayProfile(r.relaySettingsForRequest()).RelayMode,
+		})
+		writeHelperJSON(w, http.StatusMisdirectedRequest, map[string]any{
+			"status":  "failed",
+			"code":    "official_remote_control_passthrough",
+			"message": "远程控制必须连接 ChatGPT 官方服务，已阻止进入第三方模型中转。请重启 ChatGPT 后重试。",
+		})
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(req.Body, 32*1024*1024+1))
@@ -236,12 +271,13 @@ func backendRouteKnown(path string) bool {
 		"/settings/get", "/settings/set", "/realtime/status",
 		"/diagnostics/log",
 		"/user-scripts/list", "/user-scripts/set-enabled", "/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/delete",
-		"/devtools/open", "/manager/open",
+		"/devtools/open", "/manager/open", "/manager/open-transient", "/llm-proxy",
 		"/codex-model-catalog", "/codex-config-model",
 		"/zed-remote/status", "/zed-remote/resolve-host", "/zed-remote/fallback-request", "/zed-remote/open", "/zed-remote/projects", "/zed-remote/remember-project", "/zed-remote/forget-project",
 		"/upstream-worktree/status", "/upstream-worktree/defaults", "/upstream-worktree/prepare", "/upstream-worktree/create",
 		"/stepwise/settings", "/stepwise/generate", "/stepwise/test",
-		"/delete", "/undo", "/archived-thread", "/move-thread-workspace", "/move-thread-projectless", "/export-markdown", "/thread-sort-key", "/thread-sort-keys":
+		"/remote-control-session/recover",
+		"/delete", "/undo", "/archived-thread", "/move-thread-workspace", "/move-thread-projectless", "/export-markdown", "/thread-usage-history", "/thread-sort-key", "/thread-sort-keys":
 		return true
 	default:
 		return false
@@ -388,14 +424,28 @@ func (r *launcherRuntime) forwardRelayProxy(w http.ResponseWriter, req *http.Req
 	settings := r.relaySettingsForRequest()
 	requestJSON := map[string]any{}
 	_ = json.Unmarshal(body, &requestJSON)
-	profile, selectErr := selectRelayForRequest(settings, rotationContext{ConversationID: conversationIDFromRelayRequest(requestJSON)})
+	profile, routedBody, modelRoute, selectErr := selectRelayModelRoute(settings, requestJSON, body)
+	if selectErr == nil && modelRoute == nil {
+		profile, selectErr = selectRelayForRequest(settings, rotationContext{ConversationID: conversationIDFromRelayRequest(requestJSON)})
+	}
 	if selectErr != nil {
 		writeHelperJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{"message": selectErr.Error()}})
 		return
 	}
+	if modelRoute != nil {
+		body = routedBody
+		appendDiagnosticLog("relay_proxy.model_route", map[string]any{
+			"source_relay_id": modelRoute.SourceRelayID,
+			"source_model":    modelRoute.SourceModel,
+			"target_relay_id": profile.ID,
+			"upstream_model":  modelRoute.UpstreamModel,
+		})
+	}
 	profiles := []relayProfile{profile}
-	if fallbacks, err := fallbackRelaysAfter(settings, profile.ID); err == nil {
-		profiles = append(profiles, fallbacks...)
+	if modelRoute == nil {
+		if fallbacks, err := fallbackRelaysAfter(settings, profile.ID); err == nil {
+			profiles = append(profiles, fallbacks...)
+		}
 	}
 	var lastErr error
 	for attempt, candidate := range profiles {
@@ -418,6 +468,67 @@ func (r *launcherRuntime) forwardRelayProxy(w http.ResponseWriter, req *http.Req
 		message += ": " + lastErr.Error()
 	}
 	writeHelperJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{"message": message}})
+}
+
+type relayModelRouteSelection struct {
+	SourceRelayID string
+	SourceModel   string
+	UpstreamModel string
+}
+
+func selectRelayModelRoute(settings backendSettings, request map[string]any, body []byte) (relayProfile, []byte, *relayModelRouteSelection, error) {
+	source := activeRelayProfile(settings)
+	if source.RelayMode == "aggregate" {
+		return relayProfile{}, body, nil, nil
+	}
+	model := strings.TrimSpace(stringFromAny(request["model"]))
+	if model == "" {
+		return relayProfile{}, body, nil, nil
+	}
+	var selected *relayModelRoute
+	for index := range source.ModelRoutes {
+		if strings.TrimSpace(source.ModelRoutes[index].Model) == model {
+			selected = &source.ModelRoutes[index]
+			break
+		}
+	}
+	if selected == nil {
+		return relayProfile{}, body, nil, nil
+	}
+	targetID := strings.TrimSpace(selected.TargetRelayID)
+	if targetID == source.ID {
+		return relayProfile{}, body, nil, fmt.Errorf("模型路由不能指向当前供应商自身：%s", model)
+	}
+	target, found := relayProfileByID(settings, targetID)
+	if !found {
+		return relayProfile{}, body, nil, fmt.Errorf("模型路由目标供应商不存在：%s", targetID)
+	}
+	if target.RelayMode == "aggregate" {
+		return relayProfile{}, body, nil, fmt.Errorf("模型路由目标不能是聚合供应商：%s", target.Name)
+	}
+	if target.Protocol != "responses" {
+		return relayProfile{}, body, nil, fmt.Errorf("模型路由目标必须使用 Responses API：%s", target.Name)
+	}
+	if target.RelayMode == "official" && !target.OfficialMixAPIKey {
+		return relayProfile{}, body, nil, fmt.Errorf("模型路由目标不能是纯官方登录供应商：%s", target.Name)
+	}
+	if strings.TrimSpace(target.BaseURL) == "" || strings.TrimSpace(target.APIKey) == "" {
+		return relayProfile{}, body, nil, fmt.Errorf("模型路由目标缺少 Base URL 或 API Key：%s", target.Name)
+	}
+	upstreamModel := strings.TrimSpace(selected.TargetModel)
+	if upstreamModel == "" {
+		upstreamModel = model
+	}
+	request["model"] = upstreamModel
+	routedBody, err := json.Marshal(request)
+	if err != nil {
+		return relayProfile{}, body, nil, err
+	}
+	return target, routedBody, &relayModelRouteSelection{
+		SourceRelayID: source.ID,
+		SourceModel:   model,
+		UpstreamModel: upstreamModel,
+	}, nil
 }
 
 func forwardRelayProxyAttempt(settings backendSettings, w http.ResponseWriter, req *http.Request, body []byte, profile relayProfile, attempt, candidateCount int) bool {

@@ -59,6 +59,9 @@ var rendererInjectScript string
 //go:embed assets/inject/stepwise-inject.js
 var stepwiseInjectScript string
 
+//go:embed assets/inject/pet-real-mouse-inject.js
+var petRealMouseInjectScript string
+
 //go:embed assets/gpt56-model-metadata-compat.json
 var gpt56ModelMetadataJSON []byte
 

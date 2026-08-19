@@ -95,6 +95,22 @@ func openManagerApp() error {
 
 var openManagerAppFunc = openManagerApp
 
+func openTransientManagerApp() error {
+	if runtime.GOOS == "darwin" {
+		app := preferredMacOSManagerAppPath()
+		if fileExists(app) {
+			cmd := exec.Command("open", "-n", app, "--args", "--transient")
+			hideSubprocessWindow(cmd)
+			return cmd.Start()
+		}
+	}
+	cmd := exec.Command(companionBinaryPath(managerBinary), "--transient")
+	hideSubprocessWindow(cmd)
+	return cmd.Start()
+}
+
+var openTransientManagerAppFunc = openTransientManagerApp
+
 func (s *server) handleCommand(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -188,6 +204,8 @@ func (s *server) dispatch(ctx context.Context, command string, args map[string]a
 		return settingsPayload("设置已加载。")
 	case "save_settings":
 		return s.saveSettings(args)
+	case "import_dream_skin_image":
+		return s.importDreamSkinImage(ctx, args)
 	case "check_env_conflicts":
 		return s.checkEnvConflicts()
 	case "remove_env_conflicts":
@@ -205,7 +223,9 @@ func (s *server) dispatch(ctx context.Context, command string, args map[string]a
 	case "dismiss_pending_provider_import":
 		return s.dismissPendingProviderImport()
 	case "sync_providers_now":
-		return s.syncProvidersNow()
+		return s.syncProvidersNow(args)
+	case "load_provider_sync_targets":
+		return s.loadProviderSyncTargets()
 	case "list_local_sessions":
 		return s.listLocalSessions(args)
 	case "delete_local_session":
@@ -274,6 +294,10 @@ func (s *server) dispatch(ctx context.Context, command string, args map[string]a
 		return s.extractRelayCommonConfig(args)
 	case "fetch_relay_profile_models":
 		return s.fetchRelayProfileModels(ctx, args)
+	case "fetch_sub2api_billing":
+		return s.fetchSub2APIBilling(ctx, args)
+	case "diagnose_relay_profile":
+		return s.diagnoseRelayProfile(ctx, args)
 	case "install_entrypoints", "repair_shortcuts":
 		return s.installEntrypoints()
 	case "uninstall_entrypoints":

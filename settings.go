@@ -107,7 +107,6 @@ func defaultSettings() backendSettings {
 		RelayProfilesEnabled:            true,
 		Enhancements:                    true,
 		CodexAppPluginMarketplaceUnlock: true,
-		CodexAppPluginAutoExpand:        true,
 		CodexAppModelWhitelistUnlock:    true,
 		CodexAppSessionDelete:           true,
 		CodexAppMarkdownExport:          true,
@@ -119,6 +118,8 @@ func defaultSettings() backendSettings {
 		CodexAppUpstreamWorktreeCreate:  true,
 		CodexAppNativeMenuPlacement:     true,
 		CodexAppNativeMenuLocalization:  true,
+		CodexAppDreamSkinTheme:          "pink",
+		CodexAppDreamSkinThemeConfig:    defaultDreamSkinThemeConfig(),
 		CodexAppStepwiseAPIKeyEnv:       defaultStepwiseAPIKeyEnv,
 		CodexAppStepwiseMaxItems:        6,
 		CodexAppStepwiseMaxInputChars:   6000,
@@ -147,6 +148,34 @@ func defaultRelayProfile() relayProfile {
 		ContextSelection:            relayContextSelection{},
 		ContextSelectionInitialized: true,
 		ModelInsertMode:             "patch",
+		ModelRoutes:                 []relayModelRoute{},
+	}
+}
+
+func defaultDreamSkinThemeConfig() dreamSkinThemeConfig {
+	return dreamSkinThemeConfig{
+		"schemaVersion": 1,
+		"id":            "pink",
+		"name":          "Dream Skin",
+		"brandSubtitle": "CODEX DREAM SKIN",
+		"tagline":       "把喜欢的画面变成可交互的 Codex 工作台。",
+		"projectPrefix": "选择项目 · ",
+		"projectLabel":  "选择项目",
+		"statusText":    "THEME ONLINE",
+		"quote":         "Make something wonderful",
+		"appearance":    "auto",
+		"colors": map[string]any{
+			"background": "#F7F4F5",
+			"panel":      "#FFFFFF",
+			"panelAlt":   "#FFF7F8",
+			"accent":     "#E25563",
+			"accentAlt":  "#F07A86",
+			"secondary":  "#F3A8AF",
+			"highlight":  "#C93D4C",
+			"text":       "#2B2224",
+			"muted":      "#8A7A7D",
+			"line":       "rgba(196, 120, 128, .22)",
+		},
 	}
 }
 
@@ -211,6 +240,14 @@ func normalizeSettings(settings backendSettings) backendSettings {
 	}
 	settings.CodexAppImageOverlayPath = strings.TrimSpace(settings.CodexAppImageOverlayPath)
 	settings.CodexAppImageOverlayFitMode = normalizeImageOverlayFitMode(settings.CodexAppImageOverlayFitMode)
+	settings.CodexAppDreamSkinTheme = strings.TrimSpace(settings.CodexAppDreamSkinTheme)
+	if settings.CodexAppDreamSkinTheme == "" {
+		settings.CodexAppDreamSkinTheme = "pink"
+	}
+	if len(settings.CodexAppDreamSkinThemeConfig) == 0 {
+		settings.CodexAppDreamSkinThemeConfig = defaultDreamSkinThemeConfig()
+	}
+	settings.CodexAppDreamSkinImagePath = strings.TrimSpace(settings.CodexAppDreamSkinImagePath)
 	settings.CodexAppStepwiseBaseURL = strings.TrimRight(strings.TrimSpace(settings.CodexAppStepwiseBaseURL), "/")
 	settings.CodexAppStepwiseAPIKey = strings.TrimSpace(settings.CodexAppStepwiseAPIKey)
 	settings.CodexAppStepwiseAPIKeyEnv = strings.TrimSpace(settings.CodexAppStepwiseAPIKeyEnv)
@@ -259,6 +296,11 @@ func normalizeSettings(settings backendSettings) backendSettings {
 		settings.RelayProfiles[index].VLMAPIKey = strings.TrimSpace(settings.RelayProfiles[index].VLMAPIKey)
 		settings.RelayProfiles[index].VLMModel = strings.TrimSpace(settings.RelayProfiles[index].VLMModel)
 		settings.RelayProfiles[index].VLMBaseURL = strings.TrimRight(strings.TrimSpace(settings.RelayProfiles[index].VLMBaseURL), "/")
+		settings.RelayProfiles[index].Sub2APIMultiplier = strings.TrimSpace(settings.RelayProfiles[index].Sub2APIMultiplier)
+		if !settings.RelayProfiles[index].Sub2APIEnabled {
+			settings.RelayProfiles[index].Sub2APIMultiplier = ""
+		}
+		settings.RelayProfiles[index].ModelRoutes = normalizeRelayModelRoutes(settings.RelayProfiles[index].ModelRoutes)
 		if !settings.RelayProfiles[index].ContextSelectionInitialized {
 			settings.RelayProfiles[index].ContextSelection = contextSelectionForAllEntries(settings.RelayContextConfigContents)
 			settings.RelayProfiles[index].ContextSelectionInitialized = true
@@ -325,6 +367,20 @@ func normalizeSettings(settings backendSettings) backendSettings {
 		settings.OnboardingCompletedPlatform = runtime.GOOS
 	}
 	return settings
+}
+
+func normalizeRelayModelRoutes(routes []relayModelRoute) []relayModelRoute {
+	if routes == nil {
+		return []relayModelRoute{}
+	}
+	normalized := make([]relayModelRoute, 0, len(routes))
+	for _, route := range routes {
+		route.Model = strings.TrimSpace(route.Model)
+		route.TargetRelayID = strings.TrimSpace(route.TargetRelayID)
+		route.TargetModel = strings.TrimSpace(route.TargetModel)
+		normalized = append(normalized, route)
+	}
+	return normalized
 }
 
 func normalizeAggregateRelayProfile(profile aggregateRelayProfile, index int) aggregateRelayProfile {

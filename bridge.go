@@ -24,7 +24,13 @@ func (r *launcherRuntime) handleBridgeRequest(path string, payload json.RawMessa
 	var result map[string]any
 	switch path {
 	case "/backend/status", "/backend/repair":
-		result = map[string]any{"status": "ok", "message": "后端已连接", "version": version}
+		active := activeRelayProfile(loadSettings())
+		result = map[string]any{
+			"status":                 "ok",
+			"message":                "后端已连接",
+			"version":                version,
+			"hideOfficialUsageAlert": active.HideOfficialUsageAlert,
+		}
 	case "/settings/get":
 		settings := loadSettings()
 		result = r.bridgeSettingsValue(settings)
@@ -92,6 +98,14 @@ func (r *launcherRuntime) handleBridgeRequest(path string, payload json.RawMessa
 		} else {
 			result = map[string]any{"status": "ok", "message": "管理工具已打开"}
 		}
+	case "/manager/open-transient":
+		if err := openTransientManagerAppFunc(); err != nil {
+			result = map[string]any{"status": "failed", "message": "打开临时管理工具失败：" + err.Error()}
+		} else {
+			result = map[string]any{"status": "ok", "message": "管理工具已打开", "transient": true}
+		}
+	case "/llm-proxy":
+		result = llmProxyValue(payloadMap)
 	case "/codex-model-catalog", "/codex-config-model":
 		result = codexModelCatalogValue()
 	case "/zed-remote/status":
@@ -122,7 +136,9 @@ func (r *launcherRuntime) handleBridgeRequest(path string, payload json.RawMessa
 		result = stepwiseGenerateValue(payloadMap, loadSettings())
 	case "/stepwise/test":
 		result = stepwiseTestValue(payloadMap, loadSettings())
-	case "/delete", "/undo", "/archived-thread", "/move-thread-workspace", "/move-thread-projectless", "/export-markdown", "/thread-sort-key", "/thread-sort-keys":
+	case "/remote-control-session/recover":
+		result = recoverRemoteControlSessionValue(payloadMap)
+	case "/delete", "/undo", "/archived-thread", "/move-thread-workspace", "/move-thread-projectless", "/export-markdown", "/thread-usage-history", "/thread-sort-key", "/thread-sort-keys":
 		result = handleSessionDataRoute(path, payloadMap)
 	default:
 		result = map[string]any{"status": "failed", "message": "Unknown bridge path", "path": path}
@@ -171,6 +187,7 @@ func (r *launcherRuntime) bridgeSettingsValue(settings backendSettings) map[stri
 		"codexAppNativeMenuPlacement":     settings.CodexAppNativeMenuPlacement,
 		"codexAppNativeMenuLocalization":  settings.CodexAppNativeMenuLocalization,
 		"codexAppServiceTierControls":     settings.CodexAppServiceTierControls,
+		"codexAppPetRealMouseLook":        settings.CodexAppPetRealMouseLook,
 		"codexAppStepwiseEnabled":         settings.CodexAppStepwiseEnabled,
 		"codexAppStepwiseDirectSend":      settings.CodexAppStepwiseDirectSend,
 		"computerUseGuardEnabled":         settings.ComputerUseGuardEnabled,
@@ -181,6 +198,11 @@ func (r *launcherRuntime) bridgeSettingsValue(settings backendSettings) map[stri
 		"codexAppImageOverlayPath":        settings.CodexAppImageOverlayPath,
 		"codexAppImageOverlayOpacity":     settings.CodexAppImageOverlayOpacity,
 		"codexAppImageOverlayFitMode":     settings.CodexAppImageOverlayFitMode,
+		"codexAppDreamSkinEnabled":        settings.CodexAppDreamSkinEnabled,
+		"codexAppDreamSkinPaused":         settings.CodexAppDreamSkinPaused,
+		"codexAppDreamSkinTheme":          settings.CodexAppDreamSkinTheme,
+		"codexAppDreamSkinThemeConfig":    settings.CodexAppDreamSkinThemeConfig,
+		"codexAppDreamSkinImagePath":      settings.CodexAppDreamSkinImagePath,
 		"codexGoalsEnabled":               settings.CodexGoalsEnabled,
 		"mobileControlEnabled":            settings.MobileControlEnabled,
 		"mobileControlRelayUrl":           settings.MobileControlRelayURL,
@@ -194,6 +216,7 @@ func (r *launcherRuntime) bridgeSettingsValue(settings backendSettings) map[stri
 		"launchMode":                      settings.LaunchMode,
 		"activeRelayMode":                 active.RelayMode,
 		"activeRelayID":                   active.ID,
+		"hideOfficialUsageAlert":          active.HideOfficialUsageAlert,
 		"language":                        settings.Language,
 	}
 }
@@ -240,12 +263,15 @@ func (r *launcherRuntime) setBridgeSettings(payload map[string]any) map[string]a
 	applyBool("codexAppNativeMenuPlacement", &settings.CodexAppNativeMenuPlacement)
 	applyBool("codexAppNativeMenuLocalization", &settings.CodexAppNativeMenuLocalization)
 	applyBool("codexAppServiceTierControls", &settings.CodexAppServiceTierControls)
+	applyBool("codexAppPetRealMouseLook", &settings.CodexAppPetRealMouseLook)
 	applyBool("codexAppStepwiseEnabled", &settings.CodexAppStepwiseEnabled)
 	applyBool("codexAppStepwiseDirectSend", &settings.CodexAppStepwiseDirectSend)
 	applyBool("computerUseGuardEnabled", &settings.ComputerUseGuardEnabled)
 	applyBool("zedRemoteProjectRegistryEnabled", &settings.ZedRemoteProjectRegistryEnabled)
 	applyBool("zedRemoteSyncToZedSettings", &settings.ZedRemoteSyncToZedSettings)
 	applyBool("codexAppImageOverlayEnabled", &settings.CodexAppImageOverlayEnabled)
+	applyBool("codexAppDreamSkinEnabled", &settings.CodexAppDreamSkinEnabled)
+	applyBool("codexAppDreamSkinPaused", &settings.CodexAppDreamSkinPaused)
 	applyBool("codexGoalsEnabled", &settings.CodexGoalsEnabled)
 	applyBool("mobileControlEnabled", &settings.MobileControlEnabled)
 	if _, ok := payload["zedRemoteOpenStrategy"]; ok {
@@ -259,6 +285,15 @@ func (r *launcherRuntime) setBridgeSettings(payload map[string]any) map[string]a
 	}
 	if _, ok := payload["codexAppImageOverlayFitMode"]; ok {
 		settings.CodexAppImageOverlayFitMode = normalizeImageOverlayFitMode(stringFromAny(payload["codexAppImageOverlayFitMode"]))
+	}
+	if _, ok := payload["codexAppDreamSkinTheme"]; ok {
+		settings.CodexAppDreamSkinTheme = strings.TrimSpace(stringFromAny(payload["codexAppDreamSkinTheme"]))
+	}
+	if value, ok := payload["codexAppDreamSkinThemeConfig"].(map[string]any); ok && len(value) > 0 {
+		settings.CodexAppDreamSkinThemeConfig = dreamSkinThemeConfig(value)
+	}
+	if _, ok := payload["codexAppDreamSkinImagePath"]; ok {
+		settings.CodexAppDreamSkinImagePath = strings.TrimSpace(stringFromAny(payload["codexAppDreamSkinImagePath"]))
 	}
 	if _, ok := payload["mobileControlRelayUrl"]; ok {
 		settings.MobileControlRelayURL = strings.TrimSpace(stringFromAny(payload["mobileControlRelayUrl"]))
@@ -419,6 +454,9 @@ func (r *launcherRuntime) inject(helperPort uint16) error {
 func (r *launcherRuntime) bridgeWatchdog(helperPort uint16) {
 	ticker := time.NewTicker(launcherCheckInterval)
 	defer ticker.Stop()
+	if currentRuntimeGOOS() == "windows" {
+		go r.petRealMouseCursorDriver()
+	}
 	cdpUnavailableLogged := false
 	for range ticker.C {
 		if currentRuntimeGOOS() == "windows" && !tcpPortAccepting(r.debugPort) {
@@ -429,6 +467,9 @@ func (r *launcherRuntime) bridgeWatchdog(helperPort uint16) {
 			continue
 		}
 		cdpUnavailableLogged = false
+		if currentRuntimeGOOS() == "windows" {
+			r.recordPetRealMouseOverlaySync(r.syncPetRealMouseOverlays())
+		}
 		ok, err := r.bridgeHealthy()
 		if err != nil {
 			appendDiagnosticLog("bridge.health_error", map[string]any{"error": err.Error()})
@@ -516,7 +557,7 @@ func pickCDPPageTarget(targets []cdpTarget) (cdpTarget, error) {
 	var fallback *cdpTarget
 	for i := range targets {
 		target := targets[i]
-		if target.WebSocketDebuggerURL == "" || isQuickChatCDPPageTarget(target) {
+		if target.WebSocketDebuggerURL == "" || isExcludedInjectionCDPPageTarget(target) {
 			continue
 		}
 		if isPrimaryCodexCDPPageTarget(target) {
@@ -528,7 +569,7 @@ func pickCDPPageTarget(targets []cdpTarget) (cdpTarget, error) {
 	}
 	for i := range targets {
 		target := targets[i]
-		if target.WebSocketDebuggerURL != "" && target.Type == "page" && !isQuickChatCDPPageTarget(target) {
+		if target.WebSocketDebuggerURL != "" && target.Type == "page" && !isExcludedInjectionCDPPageTarget(target) {
 			return target, nil
 		}
 	}
@@ -546,7 +587,22 @@ func isCodexCDPPageTarget(target cdpTarget) bool {
 }
 
 func isPrimaryCodexCDPPageTarget(target cdpTarget) bool {
-	return isCodexCDPPageTarget(target) && !isQuickChatCDPPageTarget(target)
+	return isCodexCDPPageTarget(target) && !isExcludedInjectionCDPPageTarget(target)
+}
+
+func isExcludedInjectionCDPPageTarget(target cdpTarget) bool {
+	return isQuickChatCDPPageTarget(target) || isAvatarOverlayCDPPageTarget(target)
+}
+
+func isAvatarOverlayCDPPageTarget(target cdpTarget) bool {
+	if target.Type != "page" || target.WebSocketDebuggerURL == "" {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(target.URL))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "app") || parsed.Host != "-" || !strings.EqualFold(parsed.Path, "/index.html") {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(parsed.Query().Get("initialRoute")), "/avatar-overlay")
 }
 
 func isQuickChatCDPPageTarget(target cdpTarget) bool {
@@ -619,7 +675,74 @@ func injectionScript(helperPort uint16, settings backendSettings) string {
 	fastStartupJSON, _ := json.Marshal(map[string]any{"enabled": settings.CodexAppFastStartup, "statsigTimeoutMs": 800})
 	chineseLocaleJSON, _ := json.Marshal(map[string]any{"enabled": settings.CodexAppForceChineseLocale, "locale": "zh-CN"})
 	nativeMenuLocalizationJSON, _ := json.Marshal(map[string]any{"enabled": settings.CodexAppNativeMenuLocalization, "locale": "zh-CN"})
-	return fmt.Sprintf("window.__CODEX_SESSION_DELETE_HELPER__ = %s;\nwindow.__CODEX_PLUS_VERSION__ = %s;\nwindow.__CODEX_PLUS_BUILD__ = %s;\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = %s;\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = %s;\nwindow.__CODEX_PLUS_FAST_STARTUP__ = %s;\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = %s;\nwindow.__CODEX_PLUS_NATIVE_MENU_LOCALIZATION__ = %s;\n%s\n%s", helperJSON, versionJSON, buildJSON, imageOverlayJSON, pluginMarketplacesJSON, fastStartupJSON, chineseLocaleJSON, nativeMenuLocalizationJSON, rendererInjectScript, stepwiseInjectScript)
+	dreamSkinJSON, _ := json.Marshal(dreamSkinRuntimeConfig(settings))
+	return fmt.Sprintf("window.__CODEX_SESSION_DELETE_HELPER__ = %s;\nwindow.__CODEX_PLUS_VERSION__ = %s;\nwindow.__CODEX_PLUS_BUILD__ = %s;\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = %s;\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = %s;\nwindow.__CODEX_PLUS_FAST_STARTUP__ = %s;\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = %s;\nwindow.__CODEX_PLUS_NATIVE_MENU_LOCALIZATION__ = %s;\nwindow.__CODEX_PLUS_DREAM_SKIN__ = %s;\n%s\n%s", helperJSON, versionJSON, buildJSON, imageOverlayJSON, pluginMarketplacesJSON, fastStartupJSON, chineseLocaleJSON, nativeMenuLocalizationJSON, dreamSkinJSON, rendererInjectScript, stepwiseInjectScript)
+}
+
+func dreamSkinRuntimeConfig(settings backendSettings) map[string]any {
+	config := normalizeDreamSkinThemeConfig(settings.CodexAppDreamSkinThemeConfig)
+	imagePath := strings.TrimSpace(settings.CodexAppDreamSkinImagePath)
+	imageDataURL := ""
+	if settings.CodexAppDreamSkinEnabled && !settings.CodexAppDreamSkinPaused && imagePath != "" {
+		if contentType := overlayImageContentType(imagePath); contentType != "" {
+			if info, err := os.Stat(imagePath); err == nil && info.Size() <= 12<<20 {
+				if bytes, err := os.ReadFile(imagePath); err == nil {
+					imageDataURL = fmt.Sprintf("data:%s;base64,%s", contentType, base64.StdEncoding.EncodeToString(bytes))
+				}
+			}
+		}
+	}
+	return map[string]any{
+		"enabled":   settings.CodexAppDreamSkinEnabled,
+		"paused":    settings.CodexAppDreamSkinPaused,
+		"theme":     settings.CodexAppDreamSkinTheme,
+		"config":    config,
+		"imageData": imageDataURL,
+	}
+}
+
+func normalizeDreamSkinThemeConfig(config dreamSkinThemeConfig) dreamSkinThemeConfig {
+	defaults := defaultDreamSkinThemeConfig()
+	result := dreamSkinThemeConfig{}
+	for key, value := range defaults {
+		result[key] = value
+	}
+	for _, key := range []string{"id", "name", "brandSubtitle", "tagline", "projectPrefix", "projectLabel", "statusText", "quote", "appearance"} {
+		if value := strings.TrimSpace(stringFromAny(config[key])); value != "" && len(value) <= 160 {
+			result[key] = value
+		}
+	}
+	defaultColors, _ := defaults["colors"].(map[string]any)
+	colors := map[string]any{}
+	for key, value := range defaultColors {
+		colors[key] = value
+	}
+	if input, ok := config["colors"].(map[string]any); ok {
+		for _, key := range []string{"background", "panel", "panelAlt", "accent", "accentAlt", "secondary", "highlight", "text", "muted", "line"} {
+			if value := safeDreamSkinColor(stringFromAny(input[key])); value != "" {
+				colors[key] = value
+			}
+		}
+	}
+	result["colors"] = colors
+	return result
+}
+
+func safeDreamSkinColor(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) == 0 || len(value) > 64 {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "#") || strings.HasPrefix(lower, "rgb(") || strings.HasPrefix(lower, "rgba(") || strings.HasPrefix(lower, "hsl(") || strings.HasPrefix(lower, "hsla(") {
+		for _, forbidden := range []string{";", "{", "}", "url(", "var(", "expression"} {
+			if strings.Contains(lower, forbidden) {
+				return ""
+			}
+		}
+		return value
+	}
+	return ""
 }
 
 func imageOverlayConfig(helperPort uint16, settings backendSettings) map[string]any {
