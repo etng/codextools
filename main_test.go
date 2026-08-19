@@ -41,7 +41,7 @@ func TestParseLaunchRequestReadsRestartFlag(t *testing.T) {
 }
 
 func TestRuntimeVersionMatchesReleaseBuild(t *testing.T) {
-	if version != "1.2.7" {
+	if version != "1.2.8" {
 		t.Fatalf("runtime version should identify the release build, got %q", version)
 	}
 }
