@@ -18,6 +18,8 @@ import (
 
 const sessionDeleteBackupVersion = 2
 
+const maxRolloutMetadataLineBytes = 4 * 1024 * 1024
+
 var sessionDeleteState = struct {
 	sync.Mutex
 	inFlight map[string]struct{}
@@ -723,10 +725,13 @@ func readRolloutFile(path string) (sessionRolloutFile, error) {
 		return sessionRolloutFile{}, err
 	}
 	defer fileHandle.Close()
-	reader := bufio.NewReaderSize(fileHandle, 64*1024)
+	reader := bufio.NewReaderSize(io.LimitReader(fileHandle, maxRolloutMetadataLineBytes+1), 64*1024)
 	line, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return sessionRolloutFile{}, err
+	}
+	if len(line) > maxRolloutMetadataLineBytes {
+		return sessionRolloutFile{}, fmt.Errorf("rollout metadata line exceeds %d bytes", maxRolloutMetadataLineBytes)
 	}
 	firstLine, separator := splitFirstLine(line)
 	var record map[string]any

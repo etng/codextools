@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/gorilla/websocket"
 	"io/fs"
 	"net/http"
 	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type backendSettings struct {
@@ -164,17 +166,19 @@ type launchStatus struct {
 }
 
 type launcherRuntime struct {
-	settingsMu     sync.RWMutex
-	settings       backendSettings
-	realtimeMu     sync.Mutex
-	realtimeDenied officialRealtimeDenial
-	debugPort      uint16
-	codexAppPath   string
-	helper         *http.Server
-	relay          *http.Server
-	mobileHost     *mobileRelayHostRuntime
-	helperURL      string
-	relayURL       string
+	settingsMu          sync.RWMutex
+	settings            backendSettings
+	settingsRefreshMu   sync.Mutex
+	settingsRefreshedAt time.Time
+	realtimeMu          sync.Mutex
+	realtimeDenied      officialRealtimeDenial
+	debugPort           uint16
+	codexAppPath        string
+	helper              *http.Server
+	relay               *http.Server
+	mobileHost          *mobileRelayHostRuntime
+	helperURL           string
+	relayURL            string
 }
 
 type cdpTarget struct {

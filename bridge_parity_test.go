@@ -174,6 +174,74 @@ func TestBridgeParityRoutesExistAndAdsStayAbsent(t *testing.T) {
 	}
 }
 
+func TestHighFrequencyBridgeDiagnosticsAreSuppressed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runtime := &launcherRuntime{}
+
+	runtime.handleBridgeRequest("/settings/get", json.RawMessage(`{}`))
+	runtime.handleBridgeRequest("/diagnostics/log", json.RawMessage(`{"event":"performance_test","detail":{}}`))
+	logs := readFile(diagnosticLogPath())
+	if strings.Contains(logs, `"event":"bridge.request"`) || strings.Contains(logs, `"event":"bridge.response"`) {
+		t.Fatalf("high-frequency bridge routes should not emit request/response trace logs: %s", logs)
+	}
+	if !strings.Contains(logs, `"event":"renderer.performance_test"`) {
+		t.Fatalf("renderer diagnostic should still be persisted: %s", logs)
+	}
+	for _, path := range []string{"/settings/get", "/thread-sort-keys", "/diagnostics/log", "/diagnostics/runtime", "/v1/responses", "/v1/live"} {
+		if shouldTraceHelperRequest(path) {
+			t.Fatalf("helper request path %s should be quiet", path)
+		}
+	}
+	if !shouldTraceHelperRequest("/delete") {
+		t.Fatal("session delete should retain a diagnostic trace")
+	}
+}
+
+func TestBackendHeartbeatUsesRuntimeSettingsSnapshot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cached := defaultSettings()
+	cached.ActiveRelayID = "cached"
+	cached.RelayProfiles = []relayProfile{{ID: "cached", HideOfficialUsageAlert: true}}
+	onDisk := cached
+	onDisk.RelayProfiles = []relayProfile{{ID: "cached", HideOfficialUsageAlert: false}}
+	if err := saveSettings(onDisk); err != nil {
+		t.Fatalf("save disk settings: %v", err)
+	}
+
+	result := (&launcherRuntime{settings: cached}).handleBridgeRequest("/backend/status", json.RawMessage(`{}`))
+	if !boolFromAny(result["hideOfficialUsageAlert"]) {
+		t.Fatalf("backend heartbeat should use runtime settings without rereading disk: %#v", result)
+	}
+}
+
+func TestInjectionPerformanceGuardsArePresent(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("assets", "inject", "renderer-inject.js"))
+	if err != nil {
+		t.Fatalf("read renderer injection failed: %v", err)
+	}
+	source := string(script)
+	for _, marker := range []string{
+		"codexAppAssetCandidateUrlsCacheTtlMs = 1000",
+		"appServerRequestCandidatesCacheTtlMs = 60000",
+		"codexModelCatalogCacheTtlMs = 60000",
+		"pluginMarketplaceRequestPatchRetryDelaysMs = [500, 1500, 3000, 6000, 12000, 30000]",
+		"appServerModelRequestPatchRetryDelaysMs = [250, 500, 1000, 2000, 4000, 8000, 15000]",
+		"appServerModelRequestPatchMissCount >= appServerModelRequestPatchMaxMisses",
+		"typeof window.__codexSessionDeleteBridge === \"function\"",
+		"chatsSortRefreshIntervalMs = 5000",
+		"chatsSortDbRefreshIntervalMs = 20000",
+		"codexPlusBackendHeartbeatVisibleIntervalMs = 15000",
+		"codexPlusBackendHeartbeatHiddenIntervalMs = 60000",
+		"scheduleConversationViewAlign(1), 2000",
+		"conversationViewReleaseElement",
+		"rememberCodexRuntimeFailure",
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("renderer injection missing performance guard %q", marker)
+		}
+	}
+}
+
 func TestBridgeSettingsIncludesRuntimeCodexAppVersion(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runtime := &launcherRuntime{codexAppPath: filepath.Join("C:", "Program Files", "WindowsApps", "OpenAI.ChatGPT_26.601.2237.0_x64__2p2nqsd0c76g0", "app")}

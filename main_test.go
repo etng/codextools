@@ -41,7 +41,7 @@ func TestParseLaunchRequestReadsRestartFlag(t *testing.T) {
 }
 
 func TestRuntimeVersionMatchesReleaseBuild(t *testing.T) {
-	if version != "1.2.8" {
+	if version != "1.2.9" {
 		t.Fatalf("runtime version should identify the release build, got %q", version)
 	}
 }
@@ -626,19 +626,25 @@ func TestRendererInjectionUsesVersionGatedMarketplaceStrategy(t *testing.T) {
 	}
 }
 
-func TestRendererInjectionPrefersBridgeAndKeepsHTTPHelperFallback(t *testing.T) {
+func TestRendererInjectionUsesHTTPFirstForBackendStatusAndKeepsBridgeFallback(t *testing.T) {
 	for _, expected := range []string{
 		`async function fetchFromHelper(path, payload)`,
 		`const backendStatusRoute = path === "/backend/status" || path === "/backend/repair";`,
+		`if (codexPlusBackendCheckInFlight) return codexPlusBackendCheckInFlight;`,
+		`if (codexPlusBackendCheckInFlight === request) codexPlusBackendCheckInFlight = null;`,
+		`if (backendStatusRoute) {`,
+		`const helperResult = await fetchFromHelperOrFailure(path, payload);`,
+		`backend_status_http_failed_bridge_fallback_ok`,
 		`if (window.__codexSessionDeleteBridge)`,
 		`const bridgeResult = await bridgeWithTimeout(path, payload`,
-		`backend_status_bridge_failed_http_fallback_ok`,
-		`const fallback = await fetchFromHelperOrFailure(path, payload);`,
 		`backend_helper_and_bridge_missing`,
 	} {
 		if !strings.Contains(rendererInjectScript, expected) {
-			t.Fatalf("renderer injection should prefer bridge while keeping HTTP helper fallback; missing %q", expected)
+			t.Fatalf("renderer injection should use a resilient backend health check; missing %q", expected)
 		}
+	}
+	if strings.Contains(rendererInjectScript, `withBackendTimeout(postJson("/backend/status"`) {
+		t.Fatal("backend status should not have a second outer timeout around postJson")
 	}
 	for _, forbidden := range []string{
 		`桥接不可用，请重启启动器`,
@@ -690,7 +696,7 @@ func TestHelperHTTPServesBridgeBackendRoutes(t *testing.T) {
 	t.Setenv("HOME", home)
 	runtime := &launcherRuntime{settings: defaultSettings()}
 
-	for _, path := range []string{"/backend/status", "/settings/get", "/user-scripts/list"} {
+	for _, path := range []string{"/backend/status", "/settings/get", "/diagnostics/runtime", "/user-scripts/list"} {
 		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:57321"+path, strings.NewReader(`{}`))
 		rec := httptest.NewRecorder()
 		runtime.handleHelperHTTP(rec, req)
@@ -4127,6 +4133,31 @@ func TestEffectiveBaseURLUsesLocalProxyWhenHTTPProxyEnabledForResponses(t *testi
 	settings.ActiveRelayID = profile.ID
 	if !activeRelayNeedsLocalProxy(settings) {
 		t.Fatal("HTTP proxy enabled relay should start the local relay proxy")
+	}
+}
+
+func TestOfficialMixedRelayStartsRemoteControlProxy(t *testing.T) {
+	settings := defaultSettings()
+	settings.RelayProfilesEnabled = true
+	settings.RelayProfiles = []relayProfile{{
+		ID:                "official-mixed",
+		Name:              "Official mixed",
+		RelayMode:         "official",
+		Protocol:          "responses",
+		OfficialMixAPIKey: true,
+	}}
+	settings.ActiveRelayID = "official-mixed"
+
+	if !activeRelayNeedsLocalProxy(settings) {
+		t.Fatal("official mixed relay must start the local Remote Control proxy")
+	}
+	if !helperNeeded(settings) {
+		t.Fatal("official mixed relay must start the helper runtime")
+	}
+
+	settings.RelayProfilesEnabled = false
+	if activeRelayNeedsLocalProxy(settings) {
+		t.Fatal("disabled relay profiles must not enable the mixed Remote Control proxy")
 	}
 }
 

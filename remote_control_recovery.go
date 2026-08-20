@@ -6,12 +6,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 var remoteControlRecoveryMu sync.Mutex
+
+var remoteControlRecoveryInFlight = struct {
+	sync.Mutex
+	keys map[string]struct{}
+}{keys: map[string]struct{}{}}
 
 type pendingRemoteControlRecovery struct {
 	ThreadID       string `json:"threadId"`
@@ -43,6 +49,11 @@ func recoverRemoteControlSessionValue(payload map[string]any) map[string]any {
 	if !validProviderSyncTargetID(targetProvider) || targetProvider == "openai" {
 		return map[string]any{"status": "skipped", "message": "Remote Control session recovery requires a non-openai target provider"}
 	}
+	requestKey := threadID + "\x00" + targetProvider
+	if !beginRemoteControlRecovery(requestKey) {
+		return map[string]any{"status": "in_progress", "message": "Remote Control session recovery is already in progress"}
+	}
+	defer finishRemoteControlRecovery(requestKey)
 	change, found, err := recentRemoteControlSessionChange(codexHomeDir(), threadID, targetProvider)
 	if err != nil {
 		return map[string]any{"status": "failed", "message": "Remote Control session recovery failed: " + err.Error()}
@@ -68,23 +79,33 @@ func recoverRemoteControlSessionValue(payload map[string]any) map[string]any {
 }
 
 func recentRemoteControlSessionChange(home, threadID, targetProvider string) (sessionChange, bool, error) {
-	changes, err := collectSessionChanges(home, targetProvider)
+	change, found, err := targetedRemoteControlSessionChange(home, threadID, targetProvider)
 	if err != nil {
 		return sessionChange{}, false, err
 	}
-	for _, change := range changes {
-		if bareSessionID(change.ThreadID) != bareSessionID(threadID) || !change.RewriteNeeded {
-			continue
-		}
-		if providerFromSessionFirstLine(change.OriginalFirstLine) != "openai" {
-			continue
-		}
-		if info, statErr := os.Stat(change.Path); statErr != nil || time.Since(info.ModTime()) > 15*time.Minute {
-			continue
-		}
-		return change, true, nil
+	if !found || !change.RewriteNeeded || providerFromSessionFirstLine(change.OriginalFirstLine) != "openai" {
+		return sessionChange{}, false, nil
 	}
-	return sessionChange{}, false, nil
+	if info, statErr := os.Stat(change.Path); statErr != nil || time.Since(info.ModTime()) > 15*time.Minute {
+		return sessionChange{}, false, nil
+	}
+	return change, true, nil
+}
+
+func beginRemoteControlRecovery(key string) bool {
+	remoteControlRecoveryInFlight.Lock()
+	defer remoteControlRecoveryInFlight.Unlock()
+	if _, exists := remoteControlRecoveryInFlight.keys[key]; exists {
+		return false
+	}
+	remoteControlRecoveryInFlight.keys[key] = struct{}{}
+	return true
+}
+
+func finishRemoteControlRecovery(key string) {
+	remoteControlRecoveryInFlight.Lock()
+	delete(remoteControlRecoveryInFlight.keys, key)
+	remoteControlRecoveryInFlight.Unlock()
 }
 
 func providerFromSessionFirstLine(line string) string {
@@ -161,16 +182,106 @@ func runPendingRemoteControlRecoveries(home string) (int, error) {
 }
 
 func remoteControlSessionChange(home, threadID, targetProvider string) (sessionChange, bool, error) {
-	changes, err := collectSessionChanges(home, targetProvider)
-	if err != nil {
-		return sessionChange{}, false, err
+	return targetedRemoteControlSessionChange(home, threadID, targetProvider)
+}
+
+// Remote-control recovery is a single-thread operation. Scanning every full
+// transcript here can read many gigabytes and overlapping bridge retries make
+// that cost multiply, so only metadata for the requested thread is inspected.
+func targetedRemoteControlSessionChange(home, threadID, targetProvider string) (sessionChange, bool, error) {
+	threadID = bareSessionID(threadID)
+	if threadID == "" {
+		return sessionChange{}, false, nil
 	}
-	for _, change := range changes {
-		if bareSessionID(change.ThreadID) == bareSessionID(threadID) {
-			return change, true, nil
+	paths := map[string]struct{}{}
+	variants := sessionIDVariants(threadID)
+	for _, dbPath := range codexSessionDBPaths(home) {
+		rows, err := sqliteThreadRowsByIDs(dbPath, variants)
+		if err != nil {
+			return sessionChange{}, false, err
+		}
+		if len(rows) == 0 {
+			rows, err = sqliteAutomationRunRowsByIDs(dbPath, variants)
+			if err != nil {
+				return sessionChange{}, false, err
+			}
+		}
+		for _, row := range rows {
+			path := normalizeRolloutPath(home, stringFromAny(row.Values["rollout_path"]))
+			if path != "" && fileExists(path) {
+				paths[filepath.Clean(path)] = struct{}{}
+			}
 		}
 	}
+
+	if len(paths) == 0 {
+		for _, dirname := range []string{"sessions", "archived_sessions"} {
+			root := filepath.Join(home, dirname)
+			if !isDir(root) {
+				continue
+			}
+			if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if entry.IsDir() || !strings.HasPrefix(entry.Name(), "rollout-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
+					return nil
+				}
+				if rolloutFileNameMatchesAnyID(entry.Name(), map[string]bool{threadID: true}) {
+					paths[filepath.Clean(path)] = struct{}{}
+					return filepath.SkipAll
+				}
+				file, readErr := readRolloutFile(path)
+				if readErr == nil && bareSessionID(file.SessionID) == threadID {
+					paths[filepath.Clean(path)] = struct{}{}
+					return filepath.SkipAll
+				}
+				return nil
+			}); err != nil {
+				return sessionChange{}, false, err
+			}
+			if len(paths) > 0 {
+				break
+			}
+		}
+	}
+
+	candidates := make([]string, 0, len(paths))
+	for path := range paths {
+		candidates = append(candidates, path)
+	}
+	sort.Strings(candidates)
+	for _, path := range candidates {
+		file, err := readRolloutFile(path)
+		if err != nil || bareSessionID(file.SessionID) != threadID {
+			continue
+		}
+		return remoteControlSessionChangeFromRollout(file, targetProvider), true, nil
+	}
 	return sessionChange{}, false, nil
+}
+
+func remoteControlSessionChangeFromRollout(file sessionRolloutFile, targetProvider string) sessionChange {
+	payload, _ := file.Record["payload"].(map[string]any)
+	originalProvider := strings.TrimSpace(stringFromAny(payload["model_provider"]))
+	payload["model_provider"] = targetProvider
+	nextBytes, _ := json.Marshal(file.Record)
+	updatedAtMS := file.UpdatedAtMs
+	if info, err := os.Stat(file.Path); err == nil {
+		updatedAtMS = info.ModTime().UnixMilli()
+	}
+	title := firstString(file.Title, file.SessionID)
+	return sessionChange{
+		Path: file.Path, OriginalFirstLine: file.FirstLine, NextFirstLine: string(nextBytes),
+		OriginalSessionMetaLines: []string{file.FirstLine}, NextSessionMetaLines: []string{string(nextBytes)},
+		Separator: file.Separator, ThreadID: file.SessionID, CWD: file.CWD,
+		Source: firstString(payload["source"], payload["originator"], "vscode"), Title: title, Preview: title,
+		CreatedAt: timestampMsToSeconds(file.CreatedAtMs), UpdatedAt: timestampMsToSeconds(updatedAtMS),
+		CreatedAtMs: file.CreatedAtMs, UpdatedAtMs: updatedAtMS,
+		Archived:   strings.Contains(filepath.ToSlash(file.Path), "/archived_sessions/"),
+		CLIVersion: stringFromAny(payload["cli_version"]), SandboxPolicy: `{"type":"danger-full-access"}`,
+		ApprovalMode: "never", HasUserEvent: true, RewriteNeeded: originalProvider != targetProvider,
+	}
 }
 
 func recoverRemoteControlSessionCatalog(change sessionChange, targetProvider string) (int, error) {

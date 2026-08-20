@@ -231,3 +231,13 @@ func TestWindowsRestartFlowKeepsMacOSBranchSeparate(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsInstallerStopsRunningChatGPTBeforeUpgrade(t *testing.T) {
+	script := readFile("scripts/build/windows-release.sh")
+	if !strings.Contains(script, `taskkill /IM ChatGPT.exe /T /F`) {
+		t.Fatal("Windows installer must stop the running ChatGPT desktop app before replacing the launcher")
+	}
+	if strings.Contains(script, `taskkill /IM Codex.exe /T /F`) {
+		t.Fatal("Windows installer must not terminate unrelated Codex CLI processes")
+	}
+}

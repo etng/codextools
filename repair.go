@@ -37,6 +37,7 @@ var acquireProviderSyncLauncherGuard = defaultConversationHistoryLauncherGuard
 const (
 	providerSyncLockTTL             = 30 * time.Minute
 	providerSyncUnknownOwnerLockTTL = 2 * time.Minute
+	providerSyncMetadataReadLimit   = 512 * 1024
 )
 
 func (s *server) syncProvidersNow(argSets ...map[string]any) commandResult {
@@ -1070,7 +1071,7 @@ func collectSessionChanges(home, targetProvider string) ([]sessionChange, error)
 	sort.Strings(files)
 	changes := make([]sessionChange, 0, len(files))
 	for _, path := range files {
-		textBytes, err := os.ReadFile(path)
+		textBytes, truncated, err := readProviderSyncMetadata(path)
 		if err != nil {
 			return nil, err
 		}
@@ -1085,6 +1086,12 @@ func collectSessionChanges(home, targetProvider string) ([]sessionChange, error)
 		threadID := stringFromAny(payload["id"])
 		cwd := toDesktopWorkspacePath(stringFromAny(payload["cwd"]))
 		meta := sessionChangeMetadata(path, text, record, payload)
+		if truncated && !meta.HasUserEvent {
+			// A transcript larger than the metadata window necessarily contains
+			// history beyond session_meta. Preserve it as a real user session when
+			// a missing SQLite catalog row needs to be reconstructed.
+			meta.HasUserEvent = true
+		}
 		changes = append(changes, sessionChange{
 			Path: path, OriginalFirstLine: originalMetaLines[0], NextFirstLine: nextMetaLines[0],
 			OriginalSessionMetaLines: originalMetaLines, NextSessionMetaLines: nextMetaLines,
@@ -1096,6 +1103,27 @@ func collectSessionChanges(home, targetProvider string) ([]sessionChange, error)
 		})
 	}
 	return changes, nil
+}
+
+func readProviderSyncMetadata(path string) ([]byte, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, providerSyncMetadataReadLimit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(data) <= providerSyncMetadataReadLimit {
+		return data, false, nil
+	}
+	data = data[:providerSyncMetadataReadLimit]
+	lastNewline := bytes.LastIndexByte(data, '\n')
+	if lastNewline < 0 {
+		return nil, true, fmt.Errorf("session metadata line exceeds %d bytes: %s", providerSyncMetadataReadLimit, path)
+	}
+	return data[:lastNewline+1], true, nil
 }
 
 func providerSyncSessionMetaRewrites(text, targetProvider string) (map[string]any, map[string]any, []string, []string, bool, error) {

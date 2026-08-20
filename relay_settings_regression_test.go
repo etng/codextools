@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeSettingsMakesVisibleRelayBaseURLCanonical(t *testing.T) {
@@ -138,6 +139,37 @@ func TestRelayRuntimeReloadsSavedSettingsOnWindowsAndMac(t *testing.T) {
 	}
 	if !macProfile.ProxyEnabled || macProfile.ProxyURL != "http://127.0.0.1:7890" {
 		t.Fatalf("macOS relay did not reload the HTTP proxy: %#v", macProfile)
+	}
+}
+
+func TestRelayRuntimeSettingsReloadIsRateLimited(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+
+	settings := defaultSettings()
+	settings.ActiveRelayID = "relay"
+	settings.RelayProfiles = []relayProfile{{ID: "relay", Model: "first-model", Protocol: "responses", RelayMode: "pureApi"}}
+	if err := saveSettings(settings); err != nil {
+		t.Fatalf("save first settings: %v", err)
+	}
+	runtimeState := &launcherRuntime{settings: defaultSettings()}
+	if got := activeRelayProfile(runtimeState.relaySettingsForRequest()).Model; got != "first-model" {
+		t.Fatalf("first runtime settings refresh got model %q", got)
+	}
+
+	settings.RelayProfiles[0].Model = "second-model"
+	if err := saveSettings(settings); err != nil {
+		t.Fatalf("save second settings: %v", err)
+	}
+	if got := activeRelayProfile(runtimeState.relaySettingsForRequest()).Model; got != "first-model" {
+		t.Fatalf("runtime settings should stay cached inside refresh window, got model %q", got)
+	}
+	runtimeState.settingsRefreshMu.Lock()
+	runtimeState.settingsRefreshedAt = time.Now().Add(-runtimeSettingsRefreshInterval)
+	runtimeState.settingsRefreshMu.Unlock()
+	if got := activeRelayProfile(runtimeState.relaySettingsForRequest()).Model; got != "second-model" {
+		t.Fatalf("runtime settings should reload after refresh window, got model %q", got)
 	}
 }
 

@@ -82,16 +82,22 @@ func TestRemoteControlRelayBypassDoesNotReachProviderInOfficialOrMixedMode(t *te
 	}
 }
 
-func TestRemoteControlInjectionKeepsNativeRequestsUnmodified(t *testing.T) {
+func TestRemoteControlInjectionPreservesNativeRPCAndNormalizesMixedSessions(t *testing.T) {
 	source := readFile("assets/inject/renderer-inject.js")
 	for _, marker := range []string{
 		"isCodexRemoteControlRequest",
 		"remote_control_request_passthrough",
-		"return params;",
-		"return original(method, params, options);",
+		"remote_control.app_server_request",
+		"remote_control.app_server_response",
+		"callCodexRemoteControlAppServer",
+		"applyCodexRemoteSessionProviderOverride",
+		"remote_session_provider_override_applied",
+		"await loadCodexModelCatalog();",
+		"scheduleAppServerModelRequestPatchRetry",
+		"appServerModelRequestPatchRetryTimer",
 	} {
 		if !strings.Contains(source, marker) {
-			t.Fatalf("renderer injection missing remote-control passthrough marker %q", marker)
+			t.Fatalf("renderer injection missing remote-control routing marker %q", marker)
 		}
 	}
 }

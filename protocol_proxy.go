@@ -24,6 +24,9 @@ func convertResponsesRequestForProfile(profile relayProfile, path string, body [
 	if profile.Protocol != "chatCompletions" || !isResponsesProxyPath(path) {
 		return body, ctx, nil
 	}
+	if isResponsesCompactProxyPath(path) {
+		return nil, ctx, errors.New("Chat Completions 协议暂不支持 Responses compact 请求")
+	}
 	var request map[string]any
 	if err := json.Unmarshal(body, &request); err != nil {
 		return nil, ctx, fmt.Errorf("invalid Responses request: %w", err)
@@ -45,7 +48,18 @@ func convertResponsesRequestForProfile(profile relayProfile, path string, body [
 func isResponsesProxyPath(path string) bool {
 	path = strings.SplitN(path, "?", 2)[0]
 	switch path {
-	case "/responses", "/v1/responses", "/v1/v1/responses", "/codex/v1/responses":
+	case "/responses", "/v1/responses", "/v1/v1/responses", "/codex/v1/responses",
+		"/responses/compact", "/v1/responses/compact", "/v1/v1/responses/compact", "/codex/v1/responses/compact":
+		return true
+	default:
+		return false
+	}
+}
+
+func isResponsesCompactProxyPath(path string) bool {
+	path = strings.SplitN(path, "?", 2)[0]
+	switch path {
+	case "/responses/compact", "/v1/responses/compact", "/v1/v1/responses/compact", "/codex/v1/responses/compact":
 		return true
 	default:
 		return false

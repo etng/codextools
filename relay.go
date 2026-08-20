@@ -864,6 +864,7 @@ func relayConfigForWrite(settings backendSettings, relay relayProfile) (string, 
 
 func relayConfigWithCommonAndLimits(settings backendSettings, relay relayProfile, configContents string) (string, error) {
 	profileConfig, _ := splitContextConfigSections(configContents)
+	profileConfig = applyRemoteControlOpenAIBaseURL(profileConfig, relay)
 	existingCatalog := strings.TrimSpace(rootKeyString(profileConfig, "model_catalog_json"))
 	managedCatalog := isManagedRelayModelCatalog(existingCatalog)
 	if strings.TrimSpace(relay.ModelList) != "" || strings.TrimSpace(relay.ModelWindows) != "" {
@@ -929,6 +930,25 @@ func applyOfficialRealtimeConfig(contents string, relay relayProfile) string {
 	}
 	contents = upsertRootKey(contents, "experimental_realtime_webrtc_call_base_url", quoteToml(officialRealtimeLocalBaseURL))
 	return upsertRootKey(contents, "experimental_realtime_ws_base_url", quoteToml(officialRealtimeLocalBaseURL))
+}
+
+// Codex's Remote Control session starts on the official provider and then
+// follows openai_base_url for the model request. In official-mix mode point
+// that one transport at our local relay; preserve an explicit user value.
+func applyRemoteControlOpenAIBaseURL(contents string, relay relayProfile) string {
+	managed := fmt.Sprintf("http://127.0.0.1:%d/v1", localRelayProxyPort)
+	current := strings.TrimSpace(rootKeyString(contents, "openai_base_url"))
+	enabled := relay.RelayMode == "mixedApi" || (relay.RelayMode == "official" && relay.OfficialMixAPIKey)
+	if enabled {
+		if current == "" || current == managed {
+			return upsertRootKey(contents, "openai_base_url", quoteToml(managed))
+		}
+		return contents
+	}
+	if current == managed {
+		return removeRootKey(contents, "openai_base_url")
+	}
+	return contents
 }
 
 func applyContextLimitsToConfig(configContents, contextWindow, autoCompactLimit string) (string, error) {
@@ -1178,6 +1198,7 @@ func relayDisplayOfficialAuthLabel(relay relayProfile) string {
 func officialRelayConfigSnapshot(currentConfig string) string {
 	officialConfig := removeRootKey(currentConfig, "experimental_realtime_webrtc_call_base_url")
 	officialConfig = removeRootKey(officialConfig, "experimental_realtime_ws_base_url")
+	officialConfig = applyRemoteControlOpenAIBaseURL(officialConfig, relayProfile{RelayMode: "official"})
 	officialConfig = removeRootKey(
 		removeRootKey(
 			removeTable(

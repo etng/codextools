@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,6 +14,22 @@ import (
 )
 
 var diagnosticThrottle sync.Map
+
+const (
+	diagnosticLogMaxBytes     = 32 << 20
+	diagnosticLogReadChunk    = 64 << 10
+	diagnosticLogMaxTailBytes = 4 << 20
+	diagnosticLogMaxReadLines = 5000
+)
+
+var diagnosticLogWriteMu sync.Mutex
+var diagnosticLogStates = map[string]*diagnosticLogState{}
+
+type diagnosticLogState struct {
+	size        int64
+	writes      uint64
+	initialized bool
+}
 
 func appendDiagnosticLog(event string, detail map[string]any) {
 	if detail == nil {
@@ -35,12 +53,60 @@ func appendDiagnosticLog(event string, detail map[string]any) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
+
+	diagnosticLogWriteMu.Lock()
+	defer diagnosticLogWriteMu.Unlock()
+	state := diagnosticLogStates[path]
+	if state == nil {
+		state = &diagnosticLogState{}
+		diagnosticLogStates[path] = state
+	}
+	if !state.initialized {
+		if info, statErr := os.Stat(path); statErr == nil {
+			state.size = info.Size()
+		}
+		state.initialized = true
+	}
+	if state.size+int64(len(data))+1 > diagnosticLogMaxBytes {
+		state.size = rotateDiagnosticLog(path, state.size)
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return
 	}
 	defer file.Close()
-	_, _ = file.Write(append(data, '\n'))
+	n, _ := file.Write(append(data, '\n'))
+	state.size += int64(n)
+	state.writes++
+	// The manager and launcher are separate processes and share this file.
+	// Re-check occasionally so one process notices writes made by the other.
+	if state.writes%64 == 0 {
+		if info, statErr := file.Stat(); statErr == nil {
+			state.size = info.Size()
+		}
+	}
+}
+
+func rotateDiagnosticLog(path string, currentSize int64) int64 {
+	// Do not preserve legacy runaway logs: keeping a multi-gigabyte backup
+	// would defeat rotation and continue consuming the user's disk.
+	if currentSize > 2*diagnosticLogMaxBytes {
+		if err := os.Truncate(path, 0); err == nil {
+			return 0
+		}
+	}
+	backup := path + ".1"
+	_ = os.Remove(backup)
+	if err := os.Rename(path, backup); err == nil || os.IsNotExist(err) {
+		return 0
+	}
+	if err := os.Truncate(path, 0); err == nil {
+		return 0
+	}
+	if info, err := os.Stat(path); err == nil {
+		return info.Size()
+	}
+	return 0
 }
 
 func shouldThrottleDiagnosticLog(event string, detail map[string]any, now time.Time) bool {
@@ -179,6 +245,29 @@ func diagnosticSettingsValue(settings backendSettings) any {
 		"cliWrapperEnabled":               settings.CLIWrapperEnabled,
 		"cliWrapperBaseUrlConfigured":     strings.TrimSpace(settings.CLIWrapperBaseURL) != "",
 		"cliWrapperApiKeyConfigured":      strings.TrimSpace(settings.CLIWrapperAPIKey) != "",
+	}
+}
+
+func runtimeDiagnosticsValue() map[string]any {
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	logBytes := int64(0)
+	if info, err := os.Stat(diagnosticLogPath()); err == nil {
+		logBytes = info.Size()
+	}
+	return map[string]any{
+		"status":                "ok",
+		"version":               version,
+		"heapAllocBytes":        memory.HeapAlloc,
+		"heapInuseBytes":        memory.HeapInuse,
+		"heapSysBytes":          memory.HeapSys,
+		"stackInuseBytes":       memory.StackInuse,
+		"sysBytes":              memory.Sys,
+		"nextGCBytes":           memory.NextGC,
+		"numGC":                 memory.NumGC,
+		"goroutines":            runtime.NumGoroutine(),
+		"diagnosticLogBytes":    logBytes,
+		"diagnosticLogMaxBytes": diagnosticLogMaxBytes,
 	}
 }
 
@@ -369,12 +458,58 @@ func (s *server) readLatestLogs(args map[string]any) commandResult {
 }
 
 func tailFile(path string, maxLines int) (string, error) {
-	data, err := os.ReadFile(path)
+	if maxLines <= 0 || maxLines > diagnosticLogMaxReadLines {
+		maxLines = diagnosticLogMaxReadLines
+	}
+	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if info.Size() == 0 {
+		return "", nil
+	}
+
+	// Read backwards in bounded chunks. Diagnostics can be large, and the UI
+	// only needs the most recent lines; loading the entire file caused avoidable
+	// multi-hundred-megabyte allocations when the log had grown unchecked.
+	var chunks [][]byte
+	readBytes := 0
+	newlines := 0
+	offset := info.Size()
+	for offset > 0 && readBytes < diagnosticLogMaxTailBytes && newlines <= maxLines {
+		start := offset - diagnosticLogReadChunk
+		if start < 0 {
+			start = 0
+		}
+		if int64(readBytes)+(offset-start) > diagnosticLogMaxTailBytes {
+			start = offset - int64(diagnosticLogMaxTailBytes-readBytes)
+		}
+		chunk := make([]byte, offset-start)
+		if _, readErr := file.ReadAt(chunk, start); readErr != nil && readErr != io.EOF {
+			return "", readErr
+		}
+		chunks = append(chunks, chunk)
+		readBytes += len(chunk)
+		newlines += bytes.Count(chunk, []byte{'\n'})
+		offset = start
+	}
+	data := make([]byte, readBytes)
+	cursor := 0
+	for index := len(chunks) - 1; index >= 0; index-- {
+		cursor += copy(data[cursor:], chunks[index])
+	}
+	if offset > 0 {
+		if newline := bytes.IndexByte(data, '\n'); newline >= 0 {
+			data = data[newline+1:]
+		}
+	}
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
-	if maxLines > 0 && len(lines) > maxLines {
+	if len(lines) > maxLines {
 		lines = lines[len(lines)-maxLines:]
 	}
 	return strings.Join(lines, "\n"), nil

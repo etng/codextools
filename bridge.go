@@ -20,11 +20,19 @@ func (r *launcherRuntime) handleBridgeRequest(path string, payload json.RawMessa
 	started := time.Now()
 	var payloadMap map[string]any
 	_ = json.Unmarshal(payload, &payloadMap)
-	appendDiagnosticLog("bridge.request", map[string]any{"path": path, "payload_keys": mapKeys(payloadMap)})
+	trace := shouldTraceBridgePath(path)
+	if trace {
+		appendDiagnosticLog("bridge.request", map[string]any{"path": path, "payload_keys": mapKeys(payloadMap)})
+	}
 	var result map[string]any
 	switch path {
 	case "/backend/status", "/backend/repair":
-		active := activeRelayProfile(loadSettings())
+		settings := r.runtimeSettingsSnapshot()
+		if strings.TrimSpace(settings.Language) == "" {
+			settings = loadSettings()
+			r.setRuntimeSettings(settings)
+		}
+		active := activeRelayProfile(settings)
 		result = map[string]any{
 			"status":                 "ok",
 			"message":                "后端已连接",
@@ -41,6 +49,8 @@ func (r *launcherRuntime) handleBridgeRequest(path string, payload json.RawMessa
 	case "/diagnostics/log":
 		r.logRendererDiagnostic(payload)
 		result = map[string]any{"status": "ok", "message": "日志已记录"}
+	case "/diagnostics/runtime":
+		result = runtimeDiagnosticsValue()
 	case "/user-scripts/list":
 		result = userScriptInventoryValue(payloadMap["runtime_status"])
 	case "/user-scripts/set-enabled":
@@ -144,12 +154,24 @@ func (r *launcherRuntime) handleBridgeRequest(path string, payload json.RawMessa
 		result = map[string]any{"status": "failed", "message": "Unknown bridge path", "path": path}
 		appendDiagnosticLog("bridge.unknown_path", map[string]any{"path": path})
 	}
-	appendDiagnosticLog("bridge.response", map[string]any{
-		"path":       path,
-		"elapsed_ms": time.Since(started).Milliseconds(),
-		"status":     stringFromAny(result["status"]),
-	})
+	status := stringFromAny(result["status"])
+	if trace || status != "" && status != "ok" || time.Since(started) >= time.Second {
+		appendDiagnosticLog("bridge.response", map[string]any{
+			"path":       path,
+			"elapsed_ms": time.Since(started).Milliseconds(),
+			"status":     status,
+		})
+	}
 	return result
+}
+
+func shouldTraceBridgePath(path string) bool {
+	switch path {
+	case "/diagnostics/log", "/diagnostics/runtime", "/backend/status", "/backend/repair", "/settings/get", "/realtime/status", "/thread-sort-key", "/thread-sort-keys":
+		return false
+	default:
+		return true
+	}
 }
 
 func mapKeys(value map[string]any) []string {

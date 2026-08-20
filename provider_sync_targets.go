@@ -121,7 +121,7 @@ func rolloutProviderSyncIDs(home string) []string {
 			if err != nil || entry.IsDir() || !strings.HasPrefix(entry.Name(), "rollout-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
 				return nil
 			}
-			data, readErr := os.ReadFile(path)
+			data, _, readErr := readProviderSyncMetadata(path)
 			if readErr != nil {
 				return nil
 			}

@@ -1168,6 +1168,12 @@ func helperNeeded(settings backendSettings) bool {
 
 func activeRelayNeedsLocalProxy(settings backendSettings) bool {
 	active := activeRelayProfile(settings)
+	// Remote Control starts on the official ChatGPT transport, but its model
+	// session follows openai_base_url in official-mix mode. Keep the local
+	// proxy alive for that path as well, matching the upstream launcher.
+	if settings.RelayProfilesEnabled && active.RelayMode == "official" && active.OfficialMixAPIKey {
+		return true
+	}
 	if active.RelayMode == "official" {
 		return false
 	}

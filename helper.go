@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/klauspost/compress/zstd"
 )
 
 func (r relayProfile) needsLocalRelayProxy() bool {
@@ -43,9 +44,20 @@ func (r *launcherRuntime) setRuntimeSettings(settings backendSettings) {
 	r.settingsMu.Unlock()
 }
 
+const runtimeSettingsRefreshInterval = 5 * time.Second
+
 func (r *launcherRuntime) relaySettingsForRequest() backendSettings {
+	now := time.Now()
+	r.settingsRefreshMu.Lock()
+	defer r.settingsRefreshMu.Unlock()
 	settings := r.runtimeSettingsSnapshot()
-	return loadRuntimeRelaySettings(settings)
+	if !r.settingsRefreshedAt.IsZero() && now.Sub(r.settingsRefreshedAt) < runtimeSettingsRefreshInterval {
+		return settings
+	}
+	settings = loadRuntimeRelaySettings(settings)
+	r.setRuntimeSettings(settings)
+	r.settingsRefreshedAt = now
+	return settings
 }
 
 func (r *launcherRuntime) startHelper(helperPort uint16) error {
@@ -103,6 +115,10 @@ func (r *launcherRuntime) handleRelayProxyHTTP(w http.ResponseWriter, req *http.
 		return
 	}
 	if websocket.IsWebSocketUpgrade(req) {
+		if req.Method == http.MethodGet && isResponsesProxyPath(req.URL.Path) {
+			writeProtocolProxyUpgradeRequired(w, req)
+			return
+		}
 		if isRemoteControlHTTPRequest(req) {
 			appendDiagnosticLog("remote_control.relay_bypass", map[string]any{
 				"method": req.Method,
@@ -149,6 +165,15 @@ func (r *launcherRuntime) handleRelayProxyHTTP(w http.ResponseWriter, req *http.
 	if isRealtimeProxyPath(req.URL.Path) {
 		r.forwardOfficialRealtimeHTTP(w, req, body)
 		return
+	}
+	if isResponsesProxyPath(req.URL.Path) && req.Method == http.MethodPost {
+		decoded, decodeErr := decodeProtocolProxyRequestBody(body, req.Header.Get("content-encoding"))
+		if decodeErr != nil {
+			writeHelperJSON(w, http.StatusBadRequest, map[string]any{"status": "failed", "message": decodeErr.Error()})
+			return
+		}
+		body = decoded
+		req.Header.Del("content-encoding")
 	}
 	r.forwardRelayProxy(w, req, body)
 }
@@ -201,6 +226,10 @@ func (r *launcherRuntime) handleHelperHTTP(w http.ResponseWriter, req *http.Requ
 		return
 	}
 	if websocket.IsWebSocketUpgrade(req) {
+		if req.Method == http.MethodGet && isResponsesProxyPath(req.URL.Path) {
+			writeProtocolProxyUpgradeRequired(w, req)
+			return
+		}
 		if isRealtimeProxyPath(req.URL.Path) {
 			r.forwardOfficialRealtimeWebSocket(w, req)
 			return
@@ -222,12 +251,23 @@ func (r *launcherRuntime) handleHelperHTTP(w http.ResponseWriter, req *http.Requ
 		writeHelperJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"status": "failed", "message": "请求体超过本地代理限制"})
 		return
 	}
-	appendDiagnosticLog("helper.request", map[string]any{
-		"method":     req.Method,
-		"path":       req.URL.Path,
-		"body_bytes": len(body),
-		"remote":     req.RemoteAddr,
-	})
+	if isResponsesProxyPath(req.URL.Path) && req.Method == http.MethodPost {
+		decoded, decodeErr := decodeProtocolProxyRequestBody(body, req.Header.Get("content-encoding"))
+		if decodeErr != nil {
+			writeHelperJSON(w, http.StatusBadRequest, map[string]any{"status": "failed", "message": decodeErr.Error()})
+			return
+		}
+		body = decoded
+		req.Header.Del("content-encoding")
+	}
+	if shouldTraceHelperRequest(req.URL.Path) {
+		appendDiagnosticLog("helper.request", map[string]any{
+			"method":     req.Method,
+			"path":       req.URL.Path,
+			"body_bytes": len(body),
+			"remote":     req.RemoteAddr,
+		})
+	}
 	if backendRouteKnown(req.URL.Path) {
 		payload := json.RawMessage(body)
 		if len(payload) == 0 {
@@ -265,11 +305,47 @@ func (r *launcherRuntime) handleHelperHTTP(w http.ResponseWriter, req *http.Requ
 	}
 }
 
+func writeProtocolProxyUpgradeRequired(w http.ResponseWriter, req *http.Request) {
+	writeHelperJSON(w, http.StatusUpgradeRequired, map[string]any{
+		"status":  "upgrade_required",
+		"code":    "protocol_proxy_http_only",
+		"message": "本地 Responses 中转仅支持 HTTP，请使用 HTTP 请求重试。",
+	})
+	appendDiagnosticLog("helper.responses_websocket_upgrade_required", map[string]any{
+		"method": req.Method,
+		"path":   req.URL.Path,
+		"status": http.StatusUpgradeRequired,
+	})
+}
+
+func decodeProtocolProxyRequestBody(body []byte, contentEncoding string) ([]byte, error) {
+	encoding := strings.TrimSpace(contentEncoding)
+	if encoding == "" || strings.EqualFold(encoding, "identity") {
+		return body, nil
+	}
+	if !strings.EqualFold(encoding, "zstd") {
+		return nil, fmt.Errorf("不支持的 Content-Encoding：%s", encoding)
+	}
+	decoder, err := zstd.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("无法解压 Responses 请求体：%w", err)
+	}
+	defer decoder.Close()
+	decoded, err := io.ReadAll(io.LimitReader(decoder, 32*1024*1024+1))
+	if err != nil {
+		return nil, fmt.Errorf("无法解压 Responses 请求体：%w", err)
+	}
+	if len(decoded) > 32*1024*1024 {
+		return nil, errors.New("解压后的 Responses 请求体超过本地代理限制")
+	}
+	return decoded, nil
+}
+
 func backendRouteKnown(path string) bool {
 	switch path {
 	case "/backend/status", "/backend/repair",
 		"/settings/get", "/settings/set", "/realtime/status",
-		"/diagnostics/log",
+		"/diagnostics/log", "/diagnostics/runtime",
 		"/user-scripts/list", "/user-scripts/set-enabled", "/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/delete",
 		"/devtools/open", "/manager/open", "/manager/open-transient", "/llm-proxy",
 		"/codex-model-catalog", "/codex-config-model",
@@ -282,6 +358,14 @@ func backendRouteKnown(path string) bool {
 	default:
 		return false
 	}
+}
+
+func shouldTraceHelperRequest(path string) bool {
+	switch path {
+	case "/diagnostics/log", "/diagnostics/runtime", "/backend/status", "/backend/repair", "/settings/get", "/realtime/status", "/thread-sort-key", "/thread-sort-keys":
+		return false
+	}
+	return !isResponsesProxyPath(path) && !isRealtimeProxyPath(path) && !isAudioTranscriptionsProxyPath(path) && !isModelsProxyPath(path)
 }
 
 func (r *launcherRuntime) handleHelperBackendRequest(path string, payload json.RawMessage) map[string]any {

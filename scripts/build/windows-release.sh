@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST="$ROOT/dist/releases"
 BUILD="$ROOT/dist/build/windows"
-VERSION="${VERSION:-1.2.8}"
+VERSION="${VERSION:-1.2.9}"
 TARGET_ARCHES="${TARGET_ARCHES:-amd64 arm64}"
 ICON_PNG="$ROOT/assets/icons/codextools-1024.png"
 ICON_ICO="$BUILD/codextools.ico"
@@ -196,7 +196,8 @@ VIAddVersionKey "ProductVersion" "$VERSION"
   nsExec::ExecToLog 'taskkill /IM codextools-launcher.exe /T /F'
   nsExec::ExecToLog 'taskkill /IM "ChatGPT Codex 管理工具.exe" /T /F'
   nsExec::ExecToLog 'taskkill /IM "ChatGPT Codex.exe" /T /F'
-  Sleep 800
+  nsExec::ExecToLog 'taskkill /IM ChatGPT.exe /T /F'
+  Sleep 1200
 !macroend
 
 Section "Install"
