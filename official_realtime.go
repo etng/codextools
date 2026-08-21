@@ -364,7 +364,7 @@ func (r *launcherRuntime) forwardOfficialRealtimeHTTP(w http.ResponseWriter, req
 	upstreamReq.Header.Set("content-type", "application/json")
 	upstreamReq.Header.Set("accept", "application/sdp")
 	profile := activeRelayProfile(settings)
-	client, err := officialRealtimeHTTPClient(profile)
+	client, err := officialRealtimeHTTPClientForSettings(settings, profile)
 	if err != nil {
 		writeOfficialRealtimeFailure(w, http.StatusBadGateway, officialRealtimeUpstreamFailedReason, err.Error())
 		return
@@ -536,6 +536,16 @@ func officialRealtimeHTTPClient(profile relayProfile) (*http.Client, error) {
 	return &copy, nil
 }
 
+func officialRealtimeHTTPClientForSettings(settings backendSettings, profile relayProfile) (*http.Client, error) {
+	client, err := relayHTTPClientForSettings(settings, profile, proxyPurposeRealtime)
+	if err != nil {
+		return nil, err
+	}
+	copy := *client
+	copy.Timeout = 30 * time.Second
+	return &copy, nil
+}
+
 func copyOfficialRealtimeHeaders(source, target http.Header) {
 	for _, name := range []string{
 		"openai-alpha", "session-id", "thread-id", "x-session-id", "originator", "x-oai-attestation", "user-agent",
@@ -580,7 +590,7 @@ func (r *launcherRuntime) forwardOfficialRealtimeWebSocket(w http.ResponseWriter
 		return
 	}
 	profile := activeRelayProfile(settings)
-	proxyURL, err := relayProfileProxyURL(profile)
+	proxyURL, err := effectiveProxyURL(settings, profile, proxyPurposeRealtime)
 	if err != nil {
 		writeOfficialRealtimeFailure(w, http.StatusBadGateway, officialRealtimeUpstreamFailedReason, err.Error())
 		return

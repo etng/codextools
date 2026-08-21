@@ -72,6 +72,17 @@ type backendSettings struct {
 	OnboardingCompletedAt            string                  `json:"onboardingCompletedAt"`
 	OnboardingCompletedPlatform      string                  `json:"onboardingCompletedPlatform"`
 	LaunchMode                       string                  `json:"launchMode"`
+	ProxyEnabled                     bool                    `json:"proxyEnabled"`
+	ProxyURL                         string                  `json:"proxyUrl"`
+	ProxyRelayEnabled                bool                    `json:"proxyRelayEnabled"`
+	ProxyRemoteControlEnabled        bool                    `json:"proxyRemoteControlEnabled"`
+	ProxyOfficialAuthEnabled         bool                    `json:"proxyOfficialAuthEnabled"`
+	ProxyRealtimeEnabled             bool                    `json:"proxyRealtimeEnabled"`
+	ProxyModelCatalogEnabled         bool                    `json:"proxyModelCatalogEnabled"`
+	ProxyAudioEnabled                bool                    `json:"proxyAudioEnabled"`
+	ProxyVLMEnabled                  bool                    `json:"proxyVlmEnabled"`
+	ProxyStepwiseEnabled             bool                    `json:"proxyStepwiseEnabled"`
+	ProxyNoProxy                     string                  `json:"proxyNoProxy"`
 	RelayBaseURL                     string                  `json:"relayBaseUrl"`
 	RelayAPIKey                      string                  `json:"relayApiKey"`
 	RelayProfiles                    []relayProfile          `json:"relayProfiles"`

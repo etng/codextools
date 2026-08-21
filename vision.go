@@ -626,7 +626,7 @@ func callVLMBatch(parent context.Context, urls []string, profile relayProfile) (
 	req.Header.Set("authorization", "Bearer "+profile.VLMAPIKey)
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("user-agent", firstNonEmpty(profile.UserAgent, "CodexTools-VLM/"+version))
-	client, err := relayHTTPClient(profile)
+	client, err := relayHTTPClientForSettings(loadSettings(), profile, proxyPurposeVLM)
 	if err != nil {
 		return "", err
 	}

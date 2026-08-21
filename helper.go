@@ -693,7 +693,11 @@ func forwardRelayProxyAttempt(settings backendSettings, w http.ResponseWriter, r
 		upstreamReq.Header.Set("cache-control", "no-cache")
 	}
 	upstreamReq.Header.Set("accept-encoding", "identity")
-	client, err := relayHTTPClient(profile)
+	purpose := proxyPurposeRelay
+	if protocolContext.Audio {
+		purpose = proxyPurposeAudio
+	}
+	client, err := relayHTTPClientForSettings(settings, profile, purpose)
 	if err != nil {
 		appendDiagnosticLog("relay_proxy.proxy_config_invalid", map[string]any{
 			"relay_id":       profile.ID,

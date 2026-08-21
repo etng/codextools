@@ -434,7 +434,7 @@ func fetchModelsFromSource(ctx context.Context, source codexModelSource) ([]stri
 	if strings.TrimSpace(source.APIKey) != "" {
 		req.Header.Set("authorization", "Bearer "+strings.TrimSpace(source.APIKey))
 	}
-	client, err := relayHTTPClient(relayProfile{ProxyEnabled: source.ProxyEnabled, ProxyURL: source.ProxyURL})
+	client, err := relayHTTPClientForSettings(loadSettings(), relayProfile{ProxyEnabled: source.ProxyEnabled, ProxyURL: source.ProxyURL}, proxyPurposeModelCatalog)
 	if err != nil {
 		status["status"] = "failed"
 		status["message"] = err.Error()

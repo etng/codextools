@@ -538,7 +538,29 @@ func buildCodexArgumentsForSettings(debugPort uint16, extraArgs []string, settin
 	if settings.CodexAppForceChineseLocale {
 		args = append(args, "--lang=zh-CN")
 	}
+	args = appendUniqueLaunchArguments(args, proxyChromiumArguments(settings)...)
 	return append(args, normalizeExtraArgs(extraArgs)...)
+}
+
+func appendUniqueLaunchArguments(args []string, additions ...string) []string {
+	seen := make(map[string]struct{}, len(args))
+	for _, arg := range args {
+		if key := strings.TrimSpace(strings.SplitN(arg, "=", 2)[0]); key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, arg := range additions {
+		key := strings.TrimSpace(strings.SplitN(arg, "=", 2)[0])
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		args = append(args, arg)
+		seen[key] = struct{}{}
+	}
+	return args
 }
 
 func buildCodexExecutable(appPath string) string {
@@ -887,9 +909,14 @@ func codexLaunchEnvironment(settingsValues ...backendSettings) []string {
 	case "darwin":
 		environment = append(environment, "PATH="+defaultGUIPath)
 	}
-	// Keep the desktop app on its native ChatGPT transport. Image relay
-	// variables are only valid for a dedicated CLI process; inheriting them
-	// here also affects native modules such as remote-control enrollment.
+	if len(settingsValues) > 0 {
+		settings := settingsValues[0]
+		if nativeDesktopProxyEnabled(settings) {
+			environment = append(environment, proxyEnvironmentForSettings(settings)...)
+		}
+	}
+	// Image relay variables are only valid for a dedicated CLI process;
+	// inheriting them here would affect native modules such as remote control.
 	return environment
 }
 
@@ -1163,7 +1190,7 @@ func launchCDPAvailable(launch codexLaunchHandle, debugPort uint16, timeout time
 
 func helperNeeded(settings backendSettings) bool {
 	imageOverlayNeeded := settings.CodexAppImageOverlayEnabled && strings.TrimSpace(settings.CodexAppImageOverlayPath) != ""
-	return settings.Enhancements || imageOverlayNeeded || activeRelayUsesProtocolProxy(settings) || activeRelayNeedsLocalProxy(settings)
+	return settings.Enhancements || imageOverlayNeeded || settings.ProxyRealtimeEnabled || activeRelayUsesProtocolProxy(settings) || activeRelayNeedsLocalProxy(settings)
 }
 
 func activeRelayNeedsLocalProxy(settings backendSettings) bool {

@@ -240,6 +240,17 @@ func (r *launcherRuntime) bridgeSettingsValue(settings backendSettings) map[stri
 		"activeRelayID":                   active.ID,
 		"hideOfficialUsageAlert":          active.HideOfficialUsageAlert,
 		"language":                        settings.Language,
+		"proxyEnabled":                    settings.ProxyEnabled,
+		"proxyUrl":                        settings.ProxyURL,
+		"proxyRelayEnabled":               settings.ProxyRelayEnabled,
+		"proxyRemoteControlEnabled":       settings.ProxyRemoteControlEnabled,
+		"proxyOfficialAuthEnabled":        settings.ProxyOfficialAuthEnabled,
+		"proxyRealtimeEnabled":            settings.ProxyRealtimeEnabled,
+		"proxyModelCatalogEnabled":        settings.ProxyModelCatalogEnabled,
+		"proxyAudioEnabled":               settings.ProxyAudioEnabled,
+		"proxyVlmEnabled":                 settings.ProxyVLMEnabled,
+		"proxyStepwiseEnabled":            settings.ProxyStepwiseEnabled,
+		"proxyNoProxy":                    settings.ProxyNoProxy,
 	}
 }
 
@@ -295,6 +306,15 @@ func (r *launcherRuntime) setBridgeSettings(payload map[string]any) map[string]a
 	applyBool("codexAppDreamSkinEnabled", &settings.CodexAppDreamSkinEnabled)
 	applyBool("codexAppDreamSkinPaused", &settings.CodexAppDreamSkinPaused)
 	applyBool("codexGoalsEnabled", &settings.CodexGoalsEnabled)
+	applyBool("proxyEnabled", &settings.ProxyEnabled)
+	applyBool("proxyRelayEnabled", &settings.ProxyRelayEnabled)
+	applyBool("proxyRemoteControlEnabled", &settings.ProxyRemoteControlEnabled)
+	applyBool("proxyOfficialAuthEnabled", &settings.ProxyOfficialAuthEnabled)
+	applyBool("proxyRealtimeEnabled", &settings.ProxyRealtimeEnabled)
+	applyBool("proxyModelCatalogEnabled", &settings.ProxyModelCatalogEnabled)
+	applyBool("proxyAudioEnabled", &settings.ProxyAudioEnabled)
+	applyBool("proxyVlmEnabled", &settings.ProxyVLMEnabled)
+	applyBool("proxyStepwiseEnabled", &settings.ProxyStepwiseEnabled)
 	applyBool("mobileControlEnabled", &settings.MobileControlEnabled)
 	if _, ok := payload["zedRemoteOpenStrategy"]; ok {
 		settings.ZedRemoteOpenStrategy = normalizeZedOpenStrategy(stringFromAny(payload["zedRemoteOpenStrategy"]))
@@ -331,6 +351,12 @@ func (r *launcherRuntime) setBridgeSettings(payload map[string]any) map[string]a
 	}
 	if _, ok := payload["language"]; ok {
 		settings.Language = normalizeLanguage(stringFromAny(payload["language"]))
+	}
+	if _, ok := payload["proxyUrl"]; ok {
+		settings.ProxyURL = strings.TrimSpace(stringFromAny(payload["proxyUrl"]))
+	}
+	if _, ok := payload["proxyNoProxy"]; ok {
+		settings.ProxyNoProxy = strings.TrimSpace(stringFromAny(payload["proxyNoProxy"]))
 	}
 	if err := saveSettings(settings); err != nil {
 		return map[string]any{"status": "failed", "message": err.Error()}

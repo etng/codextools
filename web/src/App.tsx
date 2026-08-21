@@ -25,6 +25,7 @@ import {
   Edit3,
   FileCode2,
   GripVertical,
+  Globe2,
   Image,
   Info,
   ExternalLink,
@@ -298,6 +299,17 @@ type BackendSettings = {
   zedRemoteOpenStrategy: ZedOpenStrategy;
   zedRemoteProjectRegistryEnabled: boolean;
   zedRemoteSyncToZedSettings: boolean;
+  proxyEnabled: boolean;
+  proxyUrl: string;
+  proxyRelayEnabled: boolean;
+  proxyRemoteControlEnabled: boolean;
+  proxyOfficialAuthEnabled: boolean;
+  proxyRealtimeEnabled: boolean;
+  proxyModelCatalogEnabled: boolean;
+  proxyAudioEnabled: boolean;
+  proxyVlmEnabled: boolean;
+  proxyStepwiseEnabled: boolean;
+  proxyNoProxy: string;
   codexAppImageOverlayEnabled: boolean;
   codexAppImageOverlayPath: string;
   codexAppImageOverlayOpacity: number;
@@ -906,7 +918,7 @@ function syncMarketInstalledState(current: ScriptMarketResult | null, userScript
   };
 }
 
-type Route = "overview" | "installGuide" | "relay" | "context" | "enhance" | "userScripts" | "providerSync" | "maintenance" | "settings" | "logs" | "diagnostics" | "about";
+type Route = "overview" | "installGuide" | "relay" | "proxy" | "context" | "enhance" | "userScripts" | "providerSync" | "maintenance" | "settings" | "logs" | "diagnostics" | "about";
 type Theme = "dark" | "light";
 
 type DreamSkinColorKey = "background" | "panel" | "accent" | "highlight" | "text" | "muted";
@@ -938,6 +950,7 @@ const routes: Array<{ id: Route; label: string; helper: string; group: "main" | 
   { id: "overview", label: "首页", helper: "启动和检查", group: "main", icon: LayoutDashboard },
   { id: "installGuide", label: "新手引导", helper: "安装和配置", group: "main", icon: Sparkles },
   { id: "relay", label: "连接服务", helper: "账号和 API", group: "main", icon: KeyRound },
+  { id: "proxy", label: "代理设置", helper: "网络连接策略", group: "main", icon: Globe2 },
   { id: "context", label: "工具与插件", helper: "MCP / Skills / Plugins", group: "main", icon: FileCode2 },
   { id: "enhance", label: "界面功能", helper: "删除、导出、脚本", group: "main", icon: Hammer },
   { id: "userScripts", label: "脚本中心", helper: "市场和本地脚本", group: "main", icon: ScrollText },
@@ -998,6 +1011,17 @@ const defaultSettings: BackendSettings = {
   zedRemoteOpenStrategy: "addToFocusedWorkspace",
   zedRemoteProjectRegistryEnabled: true,
   zedRemoteSyncToZedSettings: false,
+  proxyEnabled: false,
+  proxyUrl: "",
+  proxyRelayEnabled: false,
+  proxyRemoteControlEnabled: false,
+  proxyOfficialAuthEnabled: false,
+  proxyRealtimeEnabled: false,
+  proxyModelCatalogEnabled: false,
+  proxyAudioEnabled: false,
+  proxyVlmEnabled: false,
+  proxyStepwiseEnabled: false,
+  proxyNoProxy: "127.0.0.1,localhost,[::1]",
   codexAppImageOverlayEnabled: false,
   codexAppImageOverlayPath: "",
   codexAppImageOverlayOpacity: 35,
@@ -2811,6 +2835,9 @@ export function App() {
               switchProgress={relaySwitchProgress}
               actions={actions}
             />
+          ) : null}
+          {route === "proxy" ? (
+            <ProxyScreen form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
           ) : null}
           {route === "context" ? (
             <ContextScreen
@@ -5255,6 +5282,92 @@ function AboutScreen({
   );
 }
 
+function ProxyScreen({
+  form,
+  onFormChange,
+  actions,
+}: {
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  const update = (patch: Partial<BackendSettings>) => onFormChange({ ...form, ...patch });
+  const toggleRows: Array<{ key: keyof BackendSettings; title: string; detail: string }> = [
+    { key: "proxyRelayEnabled", title: "中转请求", detail: "Relay 上游、图片、VLM 和音频请求使用该代理。供应商详情中的专用代理优先。" },
+    { key: "proxyRemoteControlEnabled", title: "远程控制", detail: "启动 ChatGPT 时注入代理环境和 Chromium 代理参数，解决 Windows WebSocket 直连超时。" },
+    { key: "proxyOfficialAuthEnabled", title: "官方登录 / 账号绑定", detail: "让 ChatGPT 原生登录和官方账号绑定走代理，不修改系统 WinHTTP。" },
+    { key: "proxyRealtimeEnabled", title: "ChatGPT 高级语音 / Realtime", detail: "让 ChatGPT 原生高级语音的 HTTPS、WebSocket 和 WebRTC 媒体链路使用代理；语音仍然只访问官方服务。" },
+    { key: "proxyModelCatalogEnabled", title: "模型目录", detail: "管理器请求 /models 时使用代理。" },
+    { key: "proxyAudioEnabled", title: "音频转写", detail: "中转模式下的音频转写请求使用代理。" },
+    { key: "proxyVlmEnabled", title: "VLM 图片理解", detail: "图片理解请求使用代理；不会把图片内容写入诊断日志。" },
+    { key: "proxyStepwiseEnabled", title: "Stepwise", detail: "Stepwise 建议请求使用代理。" },
+  ];
+  return (
+    <>
+      <Panel>
+        <CardHead title="网络代理" detail="代理只注入 CodexTools 启动的进程和后端请求，不会修改 Windows WinHTTP 或系统代理。" />
+        <CardContent>
+          <label className="switch-row">
+            <input checked={form.proxyEnabled} onChange={(event) => update({ proxyEnabled: event.currentTarget.checked })} type="checkbox" />
+            <span>
+              <strong>启用全局代理配置</strong>
+              <small>先填写代理地址，再按用途打开下面的开关。</small>
+            </span>
+          </label>
+          <Field label="HTTP / HTTPS 代理地址">
+            <Input
+              value={form.proxyUrl}
+              onChange={(event) => update({ proxyUrl: event.currentTarget.value })}
+              placeholder="http://127.0.0.1:10809"
+              spellCheck={false}
+            />
+          </Field>
+          <Field label="不代理地址">
+            <Input
+              value={form.proxyNoProxy}
+              onChange={(event) => update({ proxyNoProxy: event.currentTarget.value })}
+              placeholder="127.0.0.1,localhost,[::1]"
+              spellCheck={false}
+            />
+          </Field>
+          <p className="field-hint">支持 http:// 和 https://，可带认证信息。保存时不会把密码写入日志；当前只支持 HTTP 代理协议。</p>
+          <Toolbar>
+            <Button onClick={() => void actions.saveSettings()}>
+              <Save className="h-4 w-4" />
+              保存代理地址
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title="代理用途" detail="每个用途独立生效。关闭用途开关后，相关请求回到原有连接方式。" />
+        <CardContent>
+          {toggleRows.map((row) => (
+            <label className="switch-row" key={String(row.key)}>
+              <input
+                checked={Boolean(form[row.key])}
+                disabled={!form.proxyEnabled}
+                onChange={(event) => update({ [row.key]: event.currentTarget.checked } as Partial<BackendSettings>)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{row.title}</strong>
+                <small>{row.detail}</small>
+              </span>
+            </label>
+          ))}
+          <Toolbar>
+            <Button onClick={() => void actions.saveSettings()}>
+              <Save className="h-4 w-4" />
+              保存用途设置
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
 function SettingsScreen({
   settings,
   theme,
@@ -7688,6 +7801,7 @@ function routeSubtitle(route: Route) {
     overview: "启动、连接和修复都从这里开始",
     installGuide: "按新手流程完成安装、导入和模式配置",
     relay: "选择官方登录或 API 服务，不必手动找配置文件",
+    proxy: "为中转、远程控制、官方登录和语音分别选择代理策略",
     context: "统一管理 Codex MCP、Skills 和 Plugins 配置",
     enhance: "打开会话删除、导出、项目移动和脚本能力",
     userScripts: "管理脚本市场、本地脚本和启停状态",

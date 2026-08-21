@@ -130,6 +130,7 @@ func defaultSettings() backendSettings {
 		CodexAppImageOverlayOpacity:     35,
 		CodexAppImageOverlayFitMode:     "fit",
 		LaunchMode:                      "patch",
+		ProxyNoProxy:                    "127.0.0.1,localhost,[::1]",
 		RelayProfiles:                   []relayProfile{defaultRelayProfile()},
 		AggregateRelayProfiles:          []aggregateRelayProfile{},
 		ActiveRelayID:                   "default",
@@ -228,6 +229,11 @@ func normalizeSettings(settings backendSettings) backendSettings {
 		settings.ProviderSyncManualProviders = []string{}
 	}
 	settings.Language = normalizeLanguage(settings.Language)
+	settings.ProxyURL = strings.TrimSpace(settings.ProxyURL)
+	settings.ProxyNoProxy = strings.TrimSpace(settings.ProxyNoProxy)
+	if settings.ProxyNoProxy == "" {
+		settings.ProxyNoProxy = "127.0.0.1,localhost,[::1]"
+	}
 	settings.ZedRemoteOpenStrategy = normalizeZedOpenStrategy(settings.ZedRemoteOpenStrategy)
 	if settings.CodexAppImageOverlayOpacity <= 0 {
 		settings.CodexAppImageOverlayOpacity = 35
@@ -499,6 +505,14 @@ func normalizeLanguage(language string) string {
 
 func saveSettings(settings backendSettings) error {
 	settings = normalizeSettings(settings)
+	if settings.ProxyEnabled {
+		if strings.TrimSpace(settings.ProxyURL) == "" {
+			return errors.New("代理已启用，但代理地址为空")
+		}
+		if _, err := parseConfiguredProxyURL(settings.ProxyURL); err != nil {
+			return err
+		}
+	}
 	settings.CodexExtraArgs = normalizeExtraArgs(settings.CodexExtraArgs)
 	if settings.CodexAppPath != "" {
 		if normalized := normalizeCodexAppPath(settings.CodexAppPath); normalized != "" {

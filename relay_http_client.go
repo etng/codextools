@@ -49,3 +49,7 @@ func relayHTTPClient(profile relayProfile) (*http.Client, error) {
 	transport.Proxy = http.ProxyURL(proxyURL)
 	return &http.Client{Transport: transport}, nil
 }
+
+func relayHTTPClientForSettings(settings backendSettings, profile relayProfile, purpose proxyPurpose) (*http.Client, error) {
+	return proxyHTTPClient(settings, profile, purpose)
+}

@@ -142,7 +142,7 @@ func generateStepwise(parent context.Context, request stepwiseRequest, settings 
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("authorization", "Bearer "+apiKey)
 	req.Header.Set("user-agent", "CodexTools-Stepwise/"+version)
-	client, err := relayHTTPClient(relayProfile{})
+	client, err := relayHTTPClientForSettings(settings, relayProfile{}, proxyPurposeStepwise)
 	if err != nil {
 		return stepwiseFailed(err.Error())
 	}
