@@ -5330,7 +5330,7 @@ function ProxyScreen({
               spellCheck={false}
             />
           </Field>
-          <p className="field-hint">支持 http:// 和 https://，可带认证信息。保存时不会把密码写入日志；当前只支持 HTTP 代理协议。</p>
+          <p className="field-hint">支持 http:// 和 https://，可带认证信息。保存后需要完全退出并重新启动 ChatGPT，新的代理参数才会进入高级语音和远程控制链路；不会修改系统 WinHTTP。</p>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>
               <Save className="h-4 w-4" />

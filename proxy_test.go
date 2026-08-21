@@ -89,7 +89,7 @@ func TestAdvancedVoiceProxyUsesChromiumAndWebRTCProxyPath(t *testing.T) {
 	args := buildCodexArgumentsForSettings(9229, nil, settings)
 	for _, expected := range []string{
 		"--proxy-server=http://127.0.0.1:10809",
-		"--proxy-bypass-list=<-loopback>;127.0.0.1;localhost;[::1]",
+		"--proxy-bypass-list=127.0.0.1;localhost;[::1]",
 		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
 	} {
 		if !containsString(args, expected) {

@@ -164,7 +164,7 @@ func proxyChromiumArguments(settings backendSettings) []string {
 	bypass = strings.NewReplacer(",", ";", " ", "").Replace(bypass)
 	args := []string{
 		"--proxy-server=" + proxyURL.String(),
-		"--proxy-bypass-list=<-loopback>;" + bypass,
+		"--proxy-bypass-list=" + bypass,
 	}
 	if proxyPurposeEnabled(settings, proxyPurposeRealtime) {
 		// Advanced Voice uses WebRTC. Without this flag Chromium may send
