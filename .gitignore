@@ -9,3 +9,6 @@ dist/releases/
 promo-video/
 *.log
 .DS_Store
+
+# Keep packaged release artifacts out of the cleaned fork.
+/docs/releases/
