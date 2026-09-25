@@ -1,0 +1,35 @@
+name: Sync Upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 04:17 Asia/Shanghai.
+    - cron: "17 20 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sync files
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            .github
+            .gitignore
+          sparse-checkout-cone-mode: false
+
+      - name: Rebase cleaned fork from upstream
+        env:
+          CLEAN_BRANCH: main
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_REPOSITORY: hereww/codextools
+        run: .github/scripts/sync-cleaned-fork.sh
